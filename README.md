@@ -34,7 +34,7 @@ previous result baked into the next task.
 ```ts
 subagent({
   tasks: [
-    { agent: "scout",    task: "map the auth flow",           model: "nflx-anthropic/claude-haiku-4-5" },
+    { agent: "scout",    task: "map the auth flow",           model: "anthropic/claude-haiku-4-5" },
     { agent: "reviewer", task: "review this diff for bugs" },
   ],
   observe: true,   // default: true when zellij/tmux is detected
@@ -71,7 +71,7 @@ name: scout
 description: short description
 tools: read, grep, find, ls, bash   # builtin tool allowlist (omit = all)
 thinking: medium                     # off | low | medium | high
-model: nflx-anthropic/claude-haiku-4-5   # optional default model
+model: anthropic/claude-haiku-4-5   # optional default model
 systemPromptMode: append             # append (default) | replace
 ---
 Body becomes the child's system prompt.
