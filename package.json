@@ -1,0 +1,17 @@
+{
+  "name": "pi-minimal-subagent",
+  "version": "0.1.0",
+  "description": "Minimal Pi extension: one tool that fans out N child agents in parallel and (optionally) shows them live in a zellij split",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi-extension", "pi", "subagent", "zellij"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  }
+}
