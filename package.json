@@ -6,7 +6,8 @@
   "license": "MIT",
   "keywords": ["pi-package", "pi-extension", "pi", "subagent", "zellij"],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./src/index.ts"],
+    "skills": ["./skills"]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

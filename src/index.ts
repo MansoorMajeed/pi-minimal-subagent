@@ -16,13 +16,18 @@ import { launchObserver } from "./observe.ts";
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 const ToolParams = Type.Object({
-	tasks: Type.Array(
-		Type.Object({
-			agent: Type.String({ description: "Agent name (e.g. scout, reviewer, planner, oracle, worker)" }),
-			task: Type.String({ description: "Concrete instruction for this subagent" }),
-			model: Type.Optional(Type.String({ description: "Override model (e.g. 'anthropic/claude-sonnet-4')" })),
-		}),
-		{ description: "One entry per subagent. Multiple entries run concurrently.", minItems: 1 },
+	action: Type.Optional(
+		Type.String({ description: "Set to 'list' to enumerate available agents (name, description, source) instead of running tasks." }),
+	),
+	tasks: Type.Optional(
+		Type.Array(
+			Type.Object({
+				agent: Type.String({ description: "Agent name (e.g. scout, reviewer, planner, oracle, worker)" }),
+				task: Type.String({ description: "Concrete instruction for this subagent" }),
+				model: Type.Optional(Type.String({ description: "Override model (e.g. 'anthropic/claude-sonnet-4')" })),
+			}),
+			{ description: "One entry per subagent. Multiple entries run concurrently.", minItems: 1 },
+		),
 	),
 	observe: Type.Optional(
 		Type.Boolean({ description: "Show each subagent live in a zellij/tmux split. Default: true when a multiplexer is detected." }),
@@ -56,16 +61,26 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			"Each task names an agent and a concrete instruction; multiple tasks run concurrently. " +
 			"Set a per-task `model` to use a faster/cheaper model for lighter work (e.g. a small model for recon, a stronger one for review). " +
 			"Sequential work = call this tool again with the previous result baked into the next task. " +
-			"With a zellij/tmux multiplexer, each subagent streams live in its own pane (observe).",
+			"With a zellij/tmux multiplexer, each subagent streams live in its own pane (observe). " +
+			"Use { action: 'list' } to see available agents (incl. custom ones) before picking.",
 		parameters: ToolParams,
 
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const tasks = params.tasks ?? [];
-			if (tasks.length === 0) {
-				return { content: [{ type: "text" as const, text: "subagent requires at least one task." }] };
+			const agents = discoverAgents(ctx.cwd);
+
+			if (params.action === "list") {
+				const lines = [...agents.values()]
+					.sort((a, b) => a.name.localeCompare(b.name))
+					.map((a) => `- ${a.name} (${a.source})${a.model ? ` [${a.model}]` : ""} — ${a.description || "no description"}`);
+				const text = lines.length ? `Available agents:\n${lines.join("\n")}` : "No agents found.";
+				return { content: [{ type: "text" as const, text }] };
 			}
 
-			const agents = discoverAgents(ctx.cwd);
+			const tasks = params.tasks ?? [];
+			if (tasks.length === 0) {
+				return { content: [{ type: "text" as const, text: "subagent requires `tasks` (or action: 'list' to see agents)." }] };
+			}
+
 			const unknown = tasks.map((t) => t.agent).filter((a) => !agents.has(a));
 			if (unknown.length > 0) {
 				const available = [...agents.keys()].sort().join(", ") || "(none)";
@@ -82,7 +97,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const cfg = agents.get(t.agent) as AgentConfig;
 				const label = `${i + 1}-${slug(t.agent)}`;
 				const logPath = path.join(runDir, `${label}.jsonl`);
-				fs.writeFileSync(logPath, ""); // pre-create so the observer's `tail -F` has a target
+				fs.writeFileSync(logPath, ""); // pre-create so the observer has a file to follow
 				return { task: t, cfg, label, logPath };
 			});
 
@@ -129,6 +144,9 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		},
 
 		renderCall(args: any, theme: any) {
+			if (args?.action) {
+				return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}`, 0, 0);
+			}
 			const n = args?.tasks?.length ?? 0;
 			const names = (args?.tasks ?? []).map((t: any) => t.agent).join(", ");
 			return new Text(
