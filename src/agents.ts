@@ -25,6 +25,13 @@ export interface AgentConfig {
 
 const BUNDLED_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "agents");
 
+/** Accept `tools` as a comma-separated string or a YAML sequence. */
+function normalizeTools(raw: unknown): string[] {
+	if (Array.isArray(raw)) return raw.map((t) => String(t).trim()).filter(Boolean);
+	if (typeof raw === "string") return raw.split(",").map((t) => t.trim()).filter(Boolean);
+	return [];
+}
+
 function loadDir(dir: string, source: AgentConfig["source"], out: Map<string, AgentConfig>): void {
 	let entries: fs.Dirent[];
 	try {
@@ -42,15 +49,24 @@ function loadDir(dir: string, source: AgentConfig["source"], out: Map<string, Ag
 		} catch {
 			continue;
 		}
-		const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
-		if (!frontmatter.name) continue;
-		const tools = frontmatter.tools?.split(",").map((t) => t.trim()).filter(Boolean);
-		out.set(frontmatter.name, {
-			name: frontmatter.name,
-			description: frontmatter.description ?? "",
-			model: frontmatter.model,
-			thinking: frontmatter.thinking,
-			tools: tools && tools.length > 0 ? tools : undefined,
+		let frontmatter: Record<string, unknown>;
+		let body: string;
+		try {
+			const parsed = parseFrontmatter<Record<string, unknown>>(content);
+			frontmatter = parsed.frontmatter;
+			body = parsed.body;
+		} catch {
+			continue; // one malformed-YAML file must not take down agent discovery
+		}
+		const name = typeof frontmatter.name === "string" ? frontmatter.name : undefined;
+		if (!name) continue;
+		const tools = normalizeTools(frontmatter.tools);
+		out.set(name, {
+			name,
+			description: typeof frontmatter.description === "string" ? frontmatter.description : "",
+			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			thinking: typeof frontmatter.thinking === "string" ? frontmatter.thinking : undefined,
+			tools: tools.length > 0 ? tools : undefined,
 			systemPrompt: body,
 			systemPromptMode: frontmatter.systemPromptMode === "replace" ? "replace" : "append",
 			source,
@@ -83,9 +99,3 @@ export function discoverAgents(cwd: string): Map<string, AgentConfig> {
 	return agents;
 }
 
-/** Apply a model:thinking suffix unless the model already names a thinking level. */
-export function applyThinking(model: string | undefined, thinking: string | undefined): string | undefined {
-	if (!model || !thinking || thinking === "off") return model;
-	if (/:(off|low|medium|high)$/.test(model)) return model;
-	return `${model}:${thinking}`;
-}

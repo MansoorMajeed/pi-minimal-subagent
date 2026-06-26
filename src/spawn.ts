@@ -19,6 +19,8 @@ export interface SubagentRunOptions {
 	/** Path to the JSONL log file to tee stdout into. */
 	logPath: string;
 	model?: string;
+	/** Thinking level (off|minimal|low|medium|high|xhigh); passed as `--thinking`. */
+	thinking?: string;
 	/** Builtin tool allowlist passed to `--tools`. */
 	tools?: string[];
 	/** System prompt body; written to a temp file and passed to pi. */
@@ -27,6 +29,8 @@ export interface SubagentRunOptions {
 	systemPromptMode?: "append" | "replace";
 	cwd: string;
 	timeoutMs: number;
+	/** Abort signal from the host tool call; aborting kills the child `pi`. */
+	signal?: AbortSignal;
 }
 
 export interface SubagentResult {
@@ -90,84 +94,127 @@ function messageText(message: any): string {
 }
 
 export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentResult> {
-	const args = ["--print", "--mode", "json", "--no-session"];
-	if (opts.model) args.push("--model", opts.model);
-	if (opts.tools?.length) args.push("--tools", opts.tools.join(","));
-
-	let promptFile: string | undefined;
-	if (opts.systemPrompt?.trim()) {
-		promptFile = path.join(os.tmpdir(), `pi-minsub-${Date.now()}-${Math.random().toString(36).slice(2)}.md`);
-		fs.writeFileSync(promptFile, opts.systemPrompt, { mode: 0o600 });
-		args.push(opts.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptFile);
-	}
-	args.push(`Task: ${opts.task}`);
-
-	fs.mkdirSync(path.dirname(opts.logPath), { recursive: true });
-	const logStream = fs.createWriteStream(opts.logPath, { flags: "w" });
-
 	return await new Promise<SubagentResult>((resolve) => {
 		let captured = "";
 		let stderr = "";
 		let timedOut = false;
+		let aborted = false;
 		let settled = false;
+		let streamDead = false;
+		let promptFile: string | undefined;
+		let logStream: fs.WriteStream | undefined;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		let child: ReturnType<typeof spawn> | undefined;
+		const signal = opts.signal;
 
-		const child = spawn("pi", args, {
-			cwd: opts.cwd,
-			env: process.env,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-
-		const timer = setTimeout(() => {
-			timedOut = true;
-			child.kill("SIGTERM");
-			setTimeout(() => child.kill("SIGKILL"), 3000).unref();
-		}, opts.timeoutMs);
-
-		child.stdout.on("data", (chunk: Buffer) => {
-			const s = chunk.toString("utf-8");
-			captured += s;
-			logStream.write(s);
-		});
-		child.stderr.on("data", (chunk: Buffer) => {
-			stderr += chunk.toString("utf-8");
-		});
-
-		const finish = (exitCode: number | null) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			logStream.end();
-			if (promptFile) fs.rmSync(promptFile, { force: true });
-			const answer = extractFinalAnswer(captured);
-			const ok = !timedOut && exitCode === 0 && answer.length > 0;
-			resolve({
-				agent: opts.label,
-				ok,
-				answer,
-				exitCode,
-				logPath: opts.logPath,
-				timedOut,
-				error: ok ? undefined : timedOut ? "timed out" : answer ? undefined : stderr.trim() || "no answer produced",
-			});
+		// Kill the child's whole process group (it is a group leader via
+		// `detached: true`), so pi's own subprocesses don't linger and keep the
+		// stdout pipe open. Falls back to a direct kill if the group is gone.
+		const killTree = (sig: NodeJS.Signals) => {
+			if (!child?.pid) return;
+			try {
+				process.kill(-child.pid, sig);
+			} catch {
+				try {
+					child.kill(sig);
+				} catch {
+					/* already dead */
+				}
+			}
 		};
 
-		child.on("error", (err) => {
+		const onAbort = () => {
+			aborted = true;
+			if (child && !settled) {
+				killTree("SIGTERM");
+				killTimer = setTimeout(() => killTree("SIGKILL"), 3000);
+				killTimer.unref();
+			}
+		};
+
+		const cleanup = () => {
+			if (timer) clearTimeout(timer);
+			if (killTimer) clearTimeout(killTimer);
+			if (signal) signal.removeEventListener("abort", onAbort);
+			if (logStream) {
+				try {
+					logStream.end();
+				} catch {
+					/* already closed */
+				}
+			}
+			if (promptFile) fs.rmSync(promptFile, { force: true });
+		};
+
+		const settle = (exitCode: number | null, errorOverride?: string) => {
 			if (settled) return;
 			settled = true;
-			clearTimeout(timer);
-			logStream.end();
-			if (promptFile) fs.rmSync(promptFile, { force: true });
-			resolve({
-				agent: opts.label,
-				ok: false,
-				answer: "",
-				exitCode: null,
-				logPath: opts.logPath,
-				timedOut,
-				error: `failed to spawn pi: ${err.message}`,
-			});
-		});
+			cleanup();
+			const answer = extractFinalAnswer(captured);
+			const ok = !timedOut && !aborted && exitCode === 0 && answer.length > 0;
+			const error = ok
+				? undefined
+				: (errorOverride ?? (aborted ? "aborted" : timedOut ? "timed out" : answer ? undefined : stderr.trim() || "no answer produced"));
+			resolve({ agent: opts.label, ok, answer, exitCode, logPath: opts.logPath, timedOut, error });
+		};
 
-		child.on("close", (code) => finish(code));
+		try {
+			const args = ["--print", "--mode", "json", "--no-session"];
+			if (opts.model) args.push("--model", opts.model);
+			// Apply the agent's thinking level unless the model string already names one.
+			const modelHasLevel = !!opts.model && /:(off|minimal|low|medium|high|xhigh)$/.test(opts.model);
+			if (opts.thinking && opts.thinking !== "off" && !modelHasLevel) args.push("--thinking", opts.thinking);
+			if (opts.tools?.length) args.push("--tools", opts.tools.join(","));
+
+			if (opts.systemPrompt?.trim()) {
+				promptFile = path.join(os.tmpdir(), `pi-minsub-${Date.now()}-${Math.random().toString(36).slice(2)}.md`);
+				fs.writeFileSync(promptFile, opts.systemPrompt, { mode: 0o600 });
+				args.push(opts.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptFile);
+			}
+			args.push(`Task: ${opts.task}`);
+
+			fs.mkdirSync(path.dirname(opts.logPath), { recursive: true });
+			logStream = fs.createWriteStream(opts.logPath, { flags: "w" });
+			// A stream error (ENOSPC/EACCES) would otherwise emit an unhandled
+			// 'error' and crash the host pi process. Degrade: stop teeing.
+			logStream.on("error", () => {
+				streamDead = true;
+			});
+
+			if (signal?.aborted) {
+				settle(null, "aborted");
+				return;
+			}
+
+			child = spawn("pi", args, {
+				cwd: opts.cwd,
+				env: process.env,
+				stdio: ["ignore", "pipe", "pipe"],
+				detached: true, // own process group so killTree can reap descendants
+			});
+
+			timer = setTimeout(() => {
+				timedOut = true;
+				killTree("SIGTERM");
+				killTimer = setTimeout(() => killTree("SIGKILL"), 3000);
+				killTimer.unref();
+			}, opts.timeoutMs);
+
+			if (signal) signal.addEventListener("abort", onAbort);
+
+			child.stdout?.on("data", (chunk: Buffer) => {
+				const s = chunk.toString("utf-8");
+				captured += s;
+				if (!streamDead && logStream) logStream.write(s);
+			});
+			child.stderr?.on("data", (chunk: Buffer) => {
+				stderr += chunk.toString("utf-8");
+			});
+			child.on("error", (err) => settle(null, `failed to spawn pi: ${err.message}`));
+			child.on("close", (code) => settle(code));
+		} catch (err: any) {
+			settle(null, `subagent setup failed: ${err?.message ?? String(err)}`);
+		}
 	});
 }

@@ -34,7 +34,7 @@ function formatterArgv(pane: ObserverPane): string[] {
 }
 
 function zellij(args: string[]): void {
-	execFileSync("zellij", args, { stdio: ["ignore", "ignore", "ignore"] });
+	execFileSync("zellij", args, { stdio: ["ignore", "ignore", "ignore"], timeout: 5000 });
 }
 
 function launchZellij(panes: ObserverPane[]): boolean {
@@ -57,13 +57,19 @@ function sh(s: string): string {
 	return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+function tmuxCapture(args: string[]): string {
+	return execFileSync("tmux", args, { stdio: ["ignore", "pipe", "ignore"], timeout: 5000, encoding: "utf-8" }).trim();
+}
+
 function launchTmux(panes: ObserverPane[]): boolean {
 	// tmux panes close when their command exits (remain-on-exit is off by default).
 	try {
 		const cmd = (p: ObserverPane) => formatterArgv(p).map(sh).join(" ");
-		execFileSync("tmux", ["split-window", "-h", "-d", cmd(panes[0])], { stdio: ["ignore", "ignore", "ignore"] });
+		// `-d` keeps focus on the pi pane, so capture each new pane id (`-P -F`) and
+		// target it for the next split — otherwise every split carves the pi pane.
+		let target = tmuxCapture(["split-window", "-h", "-d", "-P", "-F", "#{pane_id}", cmd(panes[0])]);
 		for (let i = 1; i < panes.length; i++) {
-			execFileSync("tmux", ["split-window", "-v", "-d", cmd(panes[i])], { stdio: ["ignore", "ignore", "ignore"] });
+			target = tmuxCapture(["split-window", "-v", "-d", "-t", target, "-P", "-F", "#{pane_id}", cmd(panes[i])]);
 		}
 		return true;
 	} catch {

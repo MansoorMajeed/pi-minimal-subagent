@@ -5,7 +5,7 @@ parallel, returns their results, and (in zellij/tmux) shows each one live in its
 own pane. No chains, no acceptance gates, no background job tracking, no
 worktrees — the parent session stays the orchestrator.
 
-~350 lines. If you want the full orchestration framework, use
+~700 lines. If you want the full orchestration framework, use
 [`pi-subagents`](https://github.com/nicobailon/pi-subagents) instead.
 
 ## Install
@@ -41,8 +41,10 @@ subagent({
 })
 ```
 
-Returns one result per task: `{ agent, ok, answer, exitCode, logPath, timedOut }`.
-All tasks run concurrently; the call returns when every child is done.
+The tool's text content is a per-task summary; the structured results are on
+`details.results`, one per task: `{ agent, ok, answer, exitCode, logPath, timedOut, error? }`.
+Up to 8 tasks per call, run with a concurrency of 4; the call returns when every
+child is done. Use `subagent({ action: "list" })` to enumerate available agents.
 
 ## Models — use cheap ones where you can
 
@@ -69,8 +71,8 @@ Bundled: `scout`, `reviewer`, `planner`, `oracle`, `worker`. Frontmatter fields:
 ---
 name: scout
 description: short description
-tools: read, grep, find, ls, bash   # builtin tool allowlist (omit = all)
-thinking: medium                     # off | low | medium | high
+tools: read, grep, find, ls, bash   # builtin tool allowlist (string or YAML list; omit = all)
+thinking: medium                     # off | minimal | low | medium | high | xhigh
 model: anthropic/claude-haiku-4-5   # optional default model
 systemPromptMode: append             # append (default) | replace
 ---

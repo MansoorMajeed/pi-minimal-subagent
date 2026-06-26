@@ -8,12 +8,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { Type } from "@sinclair/typebox";
-import { applyThinking, discoverAgents, type AgentConfig } from "./agents.ts";
+import { Type } from "typebox";
+import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
 import { launchObserver } from "./observe.ts";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_TASKS = 8;
+const MAX_CONCURRENCY = 4;
 
 const ToolParams = Type.Object({
 	action: Type.Optional(
@@ -26,7 +28,7 @@ const ToolParams = Type.Object({
 				task: Type.String({ description: "Concrete instruction for this subagent" }),
 				model: Type.Optional(Type.String({ description: "Override model (e.g. 'anthropic/claude-sonnet-4')" })),
 			}),
-			{ description: "One entry per subagent. Multiple entries run concurrently.", minItems: 1 },
+			{ description: "One entry per subagent. Multiple entries run concurrently.", minItems: 1, maxItems: MAX_TASKS },
 		),
 	),
 	observe: Type.Optional(
@@ -36,6 +38,21 @@ const ToolParams = Type.Object({
 
 function slug(s: string): string {
 	return s.replace(/[^\w.-]/g, "_").slice(0, 40);
+}
+
+/** Run `fn` over items with bounded concurrency, preserving result order. */
+async function runPool<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	const worker = async () => {
+		while (true) {
+			const i = next++;
+			if (i >= items.length) return;
+			results[i] = await fn(items[i], i);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+	return results;
 }
 
 function summarize(results: SubagentResult[]): string {
@@ -65,7 +82,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			"Use { action: 'list' } to see available agents (incl. custom ones) before picking.",
 		parameters: ToolParams,
 
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(_id, params, signal, _onUpdate, ctx) {
 			const agents = discoverAgents(ctx.cwd);
 
 			if (params.action === "list") {
@@ -112,29 +129,29 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					: `\n(no multiplexer detected — watch with: tail -F ${runDir}/*.jsonl)`;
 			}
 
-			const results = await Promise.all(
-				planned.map((p) =>
-					runSubagent({
-						task: p.task.task,
-						label: p.task.agent,
-						logPath: p.logPath,
-						model: p.task.model ?? applyThinking(p.cfg.model, p.cfg.thinking),
-						tools: p.cfg.tools,
-						systemPrompt: p.cfg.systemPrompt,
-						systemPromptMode: p.cfg.systemPromptMode,
-						cwd: ctx.cwd,
-						timeoutMs: DEFAULT_TIMEOUT_MS,
-					}).then((r) => {
-						// Signal the observer pane to auto-close (covers failure/timeout
-						// cases where the child emits no terminal `agent_end` event).
-						try {
-							fs.writeFileSync(`${p.logPath}.done`, "");
-						} catch {
-							/* observer marker is best-effort */
-						}
-						return r;
-					}),
-				),
+			const results = await runPool(planned, MAX_CONCURRENCY, (p) =>
+				runSubagent({
+					task: p.task.task,
+					label: p.task.agent,
+					logPath: p.logPath,
+					model: p.task.model ?? p.cfg.model,
+					thinking: p.cfg.thinking,
+					tools: p.cfg.tools,
+					systemPrompt: p.cfg.systemPrompt,
+					systemPromptMode: p.cfg.systemPromptMode,
+					cwd: ctx.cwd,
+					timeoutMs: DEFAULT_TIMEOUT_MS,
+					signal,
+				}).then((r) => {
+					// Signal the observer pane to auto-close (covers failure/timeout
+					// cases where the child emits no terminal `agent_end` event).
+					try {
+						fs.writeFileSync(`${p.logPath}.done`, "");
+					} catch {
+						/* observer marker is best-effort */
+					}
+					return r;
+				}),
 			);
 
 			return {

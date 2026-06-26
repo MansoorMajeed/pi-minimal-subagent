@@ -44,7 +44,8 @@ function handle(evt) {
 			break;
 		}
 		case "tool_execution_end": {
-			const txt = evt.result?.content?.find((c) => c.type === "text")?.text ?? "";
+			const content = evt.result?.content;
+			const txt = (Array.isArray(content) ? content.find((c) => c.type === "text")?.text : "") ?? "";
 			const tag = evt.isError ? red("  ↳ error: ") : dim("  ↳ ");
 			process.stdout.write(tag + dim(oneLine(txt)) + "\n");
 			break;
