@@ -10,8 +10,9 @@ worktrees — the parent session stays the orchestrator.
 
 ## Install
 
+(via git ssh)
 ```bash
-pi install /path/to/pi-minimal-subagent
+ pi install git:git@github.com:MansoorMajeed/pi-minimal-subagent.git
 ```
 
 ## Use
