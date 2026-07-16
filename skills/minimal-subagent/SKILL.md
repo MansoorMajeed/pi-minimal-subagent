@@ -1,9 +1,12 @@
 ---
 name: minimal-subagent
-description: Delegate focused work to one or more child agents in parallel via the `subagent` tool. Use for code review, recon/scouting, research, planning, second opinions, or any task that benefits from a fresh focused context — especially several independent slices that can run at once.
+description: Parent-session delegation to focused child agents in parallel via the `subagent` tool. The tool is intentionally unavailable inside child agents. Use for code review, recon/scouting, research, planning, second opinions, or independent slices that can run at once.
 ---
 
 # Delegating with `subagent`
+
+> Parent sessions only: marked child agents do not register `subagent`. A skill
+> catalog reference does not make the tool callable inside a child.
 
 You stay the orchestrator. `subagent` runs focused child agents in parallel and
 returns their results. There are no chains or background jobs: for sequential
