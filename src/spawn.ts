@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import {
 	applyActivityEvent,
 	createActivity,
@@ -162,6 +163,8 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		let timedOut = false;
 		let aborted = false;
 		let turnLimitExceeded = false;
+		let lastCompletedAnswer = "";
+		let acceptedAnswerAtLimit = "";
 		let settled = false;
 		let streamDead = false;
 		let promptFile: string | undefined;
@@ -172,18 +175,20 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		const signal = opts.signal;
 		const activity = createActivity(opts.label);
 		const eventParser = new JsonLineParser();
+		const stdoutDecoder = new StringDecoder("utf8");
 		const maxTurns = Number.isInteger(opts.maxTurns) && (opts.maxTurns ?? 0) > 0 ? opts.maxTurns! : DEFAULT_MAX_TURNS;
 
 		const emitActivity = () => opts.onActivity?.(snapshotActivity(activity));
 		const processEvent = (event: unknown) => {
+			if (turnLimitExceeded) return;
 			if (
-				!turnLimitExceeded &&
 				event &&
 				typeof event === "object" &&
 				(event as { type?: unknown }).type === "turn_start" &&
 				activity.usage.turns >= maxTurns
 			) {
 				turnLimitExceeded = true;
+				acceptedAnswerAtLimit = lastCompletedAnswer;
 				activity.state = "turn_limit";
 				activity.current = `turn limit reached (${maxTurns})`;
 				activity.recent = [...activity.recent, activity.current].slice(-3);
@@ -194,6 +199,15 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				return;
 			}
 			applyActivityEvent(activity, event);
+			if (
+				event &&
+				typeof event === "object" &&
+				(event as any).type === "message_end" &&
+				(event as any).message?.role === "assistant"
+			) {
+				const answer = messageText((event as any).message);
+				if (answer) lastCompletedAnswer = answer;
+			}
 			emitActivity();
 		};
 
@@ -239,8 +253,9 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		const settle = (exitCode: number | null, errorOverride?: string) => {
 			if (settled) return;
 			settled = true;
+			if (timedOut || aborted || turnLimitExceeded) killTree("SIGKILL");
 			cleanup();
-			const answer = extractFinalAnswer(captured);
+			const answer = turnLimitExceeded ? acceptedAnswerAtLimit : extractFinalAnswer(captured);
 			const outputFile = path.join(
 				path.dirname(opts.logPath),
 				`${path.basename(opts.logPath, path.extname(opts.logPath))}-output.md`,
@@ -330,17 +345,19 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 
 			if (signal) signal.addEventListener("abort", onAbort);
 
-			child.stdout?.on("data", (chunk: Buffer) => {
-				const s = chunk.toString("utf-8");
+			const consumeStdout = (s: string) => {
+				if (!s) return;
 				captured += s;
 				if (!streamDead && logStream) logStream.write(s);
 				for (const event of eventParser.push(s)) processEvent(event);
-			});
+			};
+			child.stdout?.on("data", (chunk: Buffer) => consumeStdout(stdoutDecoder.write(chunk)));
 			child.stderr?.on("data", (chunk: Buffer) => {
 				stderr += chunk.toString("utf-8");
 			});
 			child.on("error", (err) => settle(null, `failed to spawn pi: ${err.message}`));
 			child.on("close", (code) => {
+				consumeStdout(stdoutDecoder.end());
 				for (const event of eventParser.flush()) processEvent(event);
 				settle(code);
 			});

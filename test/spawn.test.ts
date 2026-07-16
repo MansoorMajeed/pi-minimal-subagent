@@ -77,6 +77,36 @@ test("runSubagent reports and reaps an aborted child", { concurrency: false }, a
 	}
 });
 
+test("forced termination kills same-group descendants that ignore SIGTERM", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const pidPath = path.join(dir, "descendant.pid");
+	const descendant = `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);`;
+	const binDir = fakePi(
+		dir,
+		`const { spawn } = require("node:child_process");
+		const fs = require("node:fs");
+		const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "ignore" });
+		fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));
+		setInterval(() => {}, 1000);`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	let descendantPid: number | undefined;
+	try {
+		const result = await runSubagent({ ...baseOptions(dir), timeoutMs: 500 });
+		descendantPid = Number(fs.readFileSync(pidPath, "utf-8"));
+		assert.equal(result.timedOut, true);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.throws(() => process.kill(descendantPid!, 0), { code: "ESRCH" });
+	} finally {
+		if (descendantPid) {
+			try { process.kill(descendantPid, "SIGKILL"); } catch { /* already dead */ }
+		}
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("runSubagent maps extension and project-context controls to exact Pi flags", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
 	const oldPath = process.env.PATH;
@@ -157,6 +187,68 @@ test("turn limit does not reject a natural completion on the final turn", { conc
 		assert.equal(result.ok, true);
 		assert.equal(result.turnLimitExceeded, false);
 		assert.equal(result.answer, "final answer");
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("turn limit ignores answers and usage emitted after the rejected turn starts", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const first = { role: "assistant", content: [{ type: "text", text: "accepted" }], usage: { input: 10, output: 2, totalTokens: 12, cost: { total: 0.01 } } };
+	const rejected = { role: "assistant", content: [{ type: "text", text: "must not escape" }], usage: { input: 20, output: 4, totalTokens: 24, cost: { total: 0.02 } } };
+	const events = [
+		{ type: "message_end", message: first },
+		{ type: "turn_start", turnIndex: 1 },
+		{ type: "message_end", message: rejected },
+		{ type: "agent_end", messages: [first, rejected] },
+	];
+	const binDir = fakePi(
+		dir,
+		`const events = ${JSON.stringify(events)};
+		process.stdout.write(events.map((event) => JSON.stringify(event) + "\\n").join(""));
+		setInterval(() => {}, 1000);`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent({ ...baseOptions(dir), maxTurns: 1 });
+		assert.equal(result.turnLimitExceeded, true);
+		assert.equal(result.answer, "accepted");
+		assert.deepEqual(result.usage, {
+			input: 10,
+			output: 2,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 12,
+			contextTokens: 12,
+			cost: 0.01,
+			turns: 1,
+		});
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("runSubagent preserves UTF-8 split across stdout chunks", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const event = {type:"agent_end",messages:[{role:"assistant",content:[{type:"text",text:"a🙂b"}]}]};
+		const line = Buffer.from(JSON.stringify(event) + "\\n");
+		const emoji = Buffer.from("🙂");
+		const split = line.indexOf(emoji) + 1;
+		process.stdout.write(line.subarray(0, split));
+		setTimeout(() => process.stdout.write(line.subarray(split)), 20);`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.ok, true);
+		assert.equal(result.answer, "a🙂b");
+		assert.equal(fs.readFileSync(result.logPath, "utf-8").includes("�"), false);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
