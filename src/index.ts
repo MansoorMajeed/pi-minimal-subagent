@@ -57,7 +57,7 @@ function summarize(results: SubagentResult[]): string {
 	const parts: string[] = [];
 	for (let i = 0; i < results.length; i++) {
 		const r = results[i];
-		const status = r.ok ? "ok" : r.timedOut ? "TIMED OUT" : "FAILED";
+		const status = r.ok ? "ok" : r.timedOut ? "TIMED OUT" : r.turnLimitExceeded ? "TURN LIMIT" : "FAILED";
 		parts.push(`### [${i + 1}] ${r.agent} — ${status}`);
 		if (r.answer) parts.push(r.answer);
 		else if (r.error) parts.push(`(no answer: ${r.error})`);
@@ -153,6 +153,9 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					model: p.task.model ?? p.cfg.model,
 					thinking: p.cfg.thinking,
 					tools: p.cfg.tools,
+					extensions: p.cfg.extensions,
+					inheritProjectContext: p.cfg.inheritProjectContext,
+					maxTurns: p.cfg.maxTurns,
 					systemPrompt: p.cfg.systemPrompt,
 					systemPromptMode: p.cfg.systemPromptMode,
 					cwd: ctx.cwd,

@@ -17,6 +17,7 @@ import {
 	snapshotActivity,
 	type ChildActivity,
 } from "./activity.ts";
+import { DEFAULT_MAX_TURNS } from "./agent-options.ts";
 import { MINIMAL_SUBAGENT_CHILD_ENV } from "./child-boundary.ts";
 
 export interface SubagentRunOptions {
@@ -30,6 +31,12 @@ export interface SubagentRunOptions {
 	thinking?: string;
 	/** Builtin tool allowlist passed to `--tools`. */
 	tools?: string[];
+	/** Omitted loads normal extensions; empty disables them; values are explicit paths. */
+	extensions?: string[];
+	/** False disables AGENTS.md and CLAUDE.md discovery in the child. */
+	inheritProjectContext?: boolean;
+	/** Hard completed-assistant-turn limit. */
+	maxTurns?: number;
 	/** System prompt body; written to a temp file and passed to pi. */
 	systemPrompt?: string;
 	/** "append" (default) keeps pi's base prompt; "replace" swaps it out. */
@@ -49,6 +56,7 @@ export interface SubagentResult {
 	exitCode: number | null;
 	logPath: string;
 	timedOut: boolean;
+	turnLimitExceeded: boolean;
 	error?: string;
 	activity: ChildActivity;
 }
@@ -68,6 +76,14 @@ export function extractFinalAnswer(jsonl: string): string {
 	for (let i = lines.length - 1; i >= 0; i--) {
 		const evt = tryParse(lines[i]);
 		if (evt?.type === "turn_end" && evt.message) {
+			const text = messageText(evt.message);
+			if (text) return text;
+		}
+	}
+	// A hard turn limit may stop the child before turn_end/agent_end.
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const evt = tryParse(lines[i]);
+		if (evt?.type === "message_end" && evt.message?.role === "assistant") {
 			const text = messageText(evt.message);
 			if (text) return text;
 		}
@@ -109,6 +125,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		let stderr = "";
 		let timedOut = false;
 		let aborted = false;
+		let turnLimitExceeded = false;
 		let settled = false;
 		let streamDead = false;
 		let promptFile: string | undefined;
@@ -119,9 +136,27 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		const signal = opts.signal;
 		const activity = createActivity(opts.label);
 		const eventParser = new JsonLineParser();
+		const maxTurns = Number.isInteger(opts.maxTurns) && (opts.maxTurns ?? 0) > 0 ? opts.maxTurns! : DEFAULT_MAX_TURNS;
 
 		const emitActivity = () => opts.onActivity?.(snapshotActivity(activity));
 		const processEvent = (event: unknown) => {
+			if (
+				!turnLimitExceeded &&
+				event &&
+				typeof event === "object" &&
+				(event as { type?: unknown }).type === "turn_start" &&
+				activity.usage.turns >= maxTurns
+			) {
+				turnLimitExceeded = true;
+				activity.state = "turn_limit";
+				activity.current = `turn limit reached (${maxTurns})`;
+				activity.recent = [...activity.recent, activity.current].slice(-3);
+				emitActivity();
+				killTree("SIGTERM");
+				killTimer = setTimeout(() => killTree("SIGKILL"), 3000);
+				killTimer.unref();
+				return;
+			}
 			applyActivityEvent(activity, event);
 			emitActivity();
 		};
@@ -170,12 +205,12 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			settled = true;
 			cleanup();
 			const answer = extractFinalAnswer(captured);
-			const ok = !timedOut && !aborted && exitCode === 0 && answer.length > 0;
+			const ok = !timedOut && !aborted && !turnLimitExceeded && exitCode === 0 && answer.length > 0;
 			const error = ok
 				? undefined
-				: (errorOverride ?? (aborted ? "aborted" : timedOut ? "timed out" : answer ? undefined : stderr.trim() || "no answer produced"));
+				: (errorOverride ?? (aborted ? "aborted" : timedOut ? "timed out" : turnLimitExceeded ? `turn limit reached (${maxTurns})` : answer ? undefined : stderr.trim() || "no answer produced"));
 			if (!ok) {
-				activity.state = aborted ? "aborted" : timedOut ? "timed_out" : "failed";
+				activity.state = aborted ? "aborted" : timedOut ? "timed_out" : turnLimitExceeded ? "turn_limit" : "failed";
 				activity.current = error ?? activity.state;
 				if (activity.recent[activity.recent.length - 1] !== activity.current) activity.recent.push(activity.current);
 				activity.recent = activity.recent.slice(-3);
@@ -185,7 +220,17 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				activity.recent = [...activity.recent.filter((item) => item !== "done"), "done"].slice(-3);
 			}
 			emitActivity();
-			resolve({ agent: opts.label, ok, answer, exitCode, logPath: opts.logPath, timedOut, error, activity: snapshotActivity(activity) });
+			resolve({
+				agent: opts.label,
+				ok,
+				answer,
+				exitCode,
+				logPath: opts.logPath,
+				timedOut,
+				turnLimitExceeded,
+				error,
+				activity: snapshotActivity(activity),
+			});
 		};
 
 		try {
@@ -195,6 +240,11 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			const modelHasLevel = !!opts.model && /:(off|minimal|low|medium|high|xhigh)$/.test(opts.model);
 			if (opts.thinking && opts.thinking !== "off" && !modelHasLevel) args.push("--thinking", opts.thinking);
 			if (opts.tools?.length) args.push("--tools", opts.tools.join(","));
+			if (opts.extensions !== undefined) {
+				args.push("--no-extensions");
+				for (const extension of opts.extensions) args.push("--extension", extension);
+			}
+			if (opts.inheritProjectContext === false) args.push("--no-context-files");
 
 			if (opts.systemPrompt?.trim()) {
 				promptFile = path.join(os.tmpdir(), `pi-minsub-${Date.now()}-${Math.random().toString(36).slice(2)}.md`);

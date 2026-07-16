@@ -10,6 +10,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { resolveAgentRuntimeOptions } from "./agent-options.ts";
+
+export { DEFAULT_MAX_TURNS } from "./agent-options.ts";
 
 export interface AgentConfig {
 	name: string;
@@ -17,6 +20,9 @@ export interface AgentConfig {
 	model?: string;
 	thinking?: string;
 	tools?: string[];
+	extensions?: string[];
+	inheritProjectContext: boolean;
+	maxTurns: number;
 	systemPrompt: string;
 	systemPromptMode?: "append" | "replace";
 	source: "bundled" | "user" | "project";
@@ -61,12 +67,14 @@ function loadDir(dir: string, source: AgentConfig["source"], out: Map<string, Ag
 		const name = typeof frontmatter.name === "string" ? frontmatter.name : undefined;
 		if (!name) continue;
 		const tools = normalizeTools(frontmatter.tools);
+		const runtimeOptions = resolveAgentRuntimeOptions(frontmatter);
 		out.set(name, {
 			name,
 			description: typeof frontmatter.description === "string" ? frontmatter.description : "",
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 			thinking: typeof frontmatter.thinking === "string" ? frontmatter.thinking : undefined,
 			tools: tools.length > 0 ? tools : undefined,
+			...runtimeOptions,
 			systemPrompt: body,
 			systemPromptMode: frontmatter.systemPromptMode === "replace" ? "replace" : "append",
 			source,
@@ -98,4 +106,3 @@ export function discoverAgents(cwd: string): Map<string, AgentConfig> {
 	if (projectDir) loadDir(projectDir, "project", agents);
 	return agents;
 }
-
