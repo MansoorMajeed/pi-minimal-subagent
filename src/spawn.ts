@@ -2,9 +2,8 @@
  * Spawn a single headless child `pi` agent and capture its result.
  *
  * The child runs in `--mode json`, which streams JSONL events to stdout. We tee
- * that stream to a per-run log file (so a `tail -f | format` observer pane can
- * show live progress) and, on exit, parse the final `agent_end` event to recover
- * the child's last assistant message as the answer.
+ * that stream to a per-run log file, derive compact activity updates, and parse
+ * the final `agent_end` event to recover the child's last assistant message.
  */
 
 import { spawn } from "node:child_process";
@@ -18,6 +17,7 @@ import {
 	snapshotActivity,
 	type ChildActivity,
 } from "./activity.ts";
+import { MINIMAL_SUBAGENT_CHILD_ENV } from "./child-boundary.ts";
 
 export interface SubagentRunOptions {
 	task: string;
@@ -218,7 +218,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 
 			child = spawn("pi", args, {
 				cwd: opts.cwd,
-				env: process.env,
+				env: { ...process.env, [MINIMAL_SUBAGENT_CHILD_ENV]: "1" },
 				stdio: ["ignore", "pipe", "pipe"],
 				detached: true, // own process group so killTree can reap descendants
 			});

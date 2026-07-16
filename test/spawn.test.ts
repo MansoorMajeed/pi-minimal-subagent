@@ -23,6 +23,60 @@ function baseOptions(dir: string) {
 	};
 }
 
+test("runSubagent marks the spawned process as a minimal subagent child", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const text = process.env.PI_MINIMAL_SUBAGENT_CHILD === "1" ? "marked" : "unmarked";
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[{role:"assistant",content:[{type:"text",text}]}]}) + "\\n");`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.ok, true);
+		assert.equal(result.answer, "marked");
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("runSubagent reports and reaps a timed-out child", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `setInterval(() => {}, 1000);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent({ ...baseOptions(dir), timeoutMs: 30 });
+		assert.equal(result.ok, false);
+		assert.equal(result.timedOut, true);
+		assert.equal(result.activity.state, "timed_out");
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("runSubagent reports and reaps an aborted child", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `setInterval(() => {}, 1000);`);
+	const controller = new AbortController();
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	setTimeout(() => controller.abort(), 30);
+	try {
+		const result = await runSubagent({ ...baseOptions(dir), signal: controller.signal });
+		assert.equal(result.ok, false);
+		assert.equal(result.timedOut, false);
+		assert.equal(result.error, "aborted");
+		assert.equal(result.activity.state, "aborted");
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("runSubagent emits activity before the child completes", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
 	const oldPath = process.env.PATH;

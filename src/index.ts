@@ -1,6 +1,6 @@
 /**
  * pi-minimal-subagent — one tool that fans out N child `pi` agents in parallel,
- * shows each live in a zellij split (optional), and returns aggregated results.
+ * streams compact activity inline and returns aggregated results.
  */
 
 import * as fs from "node:fs";
@@ -11,8 +11,8 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createActivity, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
+import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
-import { launchObserver } from "./observe.ts";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TASKS = 8;
@@ -31,9 +31,6 @@ const ToolParams = Type.Object({
 			}),
 			{ description: "One entry per subagent. Multiple entries run concurrently.", minItems: 1, maxItems: MAX_TASKS },
 		),
-	),
-	observe: Type.Optional(
-		Type.Boolean({ description: "Show each subagent live in a zellij/tmux split. Default: true when a multiplexer is detected." }),
 	),
 });
 
@@ -77,6 +74,8 @@ interface SubagentDetails {
 }
 
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
+	if (isMinimalSubagentChild()) return;
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -85,7 +84,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			"Each task names an agent and a concrete instruction; multiple tasks run concurrently. " +
 			"Set a per-task `model` to use a faster/cheaper model for lighter work (e.g. a small model for recon, a stronger one for review). " +
 			"Sequential work = call this tool again with the previous result baked into the next task. " +
-			"With a zellij/tmux multiplexer, each subagent streams live in its own pane (observe). " +
+			"Each child streams compact live activity in the tool result. " +
 			"Use { action: 'list' } to see available agents (incl. custom ones) before picking.",
 		parameters: ToolParams,
 
@@ -121,7 +120,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const cfg = agents.get(t.agent) as AgentConfig;
 				const label = `${i + 1}-${slug(t.agent)}`;
 				const logPath = path.join(runDir, `${label}.jsonl`);
-				fs.writeFileSync(logPath, ""); // pre-create so the observer has a file to follow
+				fs.writeFileSync(logPath, "");
 				return { task: t, cfg, label, logPath, activity: createActivity(t.agent) };
 			});
 
@@ -146,17 +145,6 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			};
 			update();
 
-			const observe = params.observe ?? true;
-			let observerNote = "";
-			if (observe) {
-				const obs = launchObserver(
-					planned.map((p) => ({ label: p.task.agent, logPath: p.logPath })),
-				);
-				observerNote = obs.launched
-					? `\n(observing ${planned.length} subagent(s) in a ${obs.mux} split)`
-					: `\n(no multiplexer detected — watch with: tail -F ${runDir}/*.jsonl)`;
-			}
-
 			const results = await runPool(planned, MAX_CONCURRENCY, (p) =>
 				runSubagent({
 					task: p.task.task,
@@ -174,21 +162,12 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						p.activity = activity;
 						scheduleUpdate();
 					},
-				}).then((r) => {
-					// Signal the observer pane to auto-close (covers failure/timeout
-					// cases where the child emits no terminal `agent_end` event).
-					try {
-						fs.writeFileSync(`${p.logPath}.done`, "");
-					} catch {
-						/* observer marker is best-effort */
-					}
-					return r;
 				}),
 			);
 			if (updateTimer) clearTimeout(updateTimer);
 
 			return {
-				content: [{ type: "text" as const, text: summarize(results) + observerNote }],
+				content: [{ type: "text" as const, text: summarize(results) }],
 				details: { runDir, activities: results.map((result) => result.activity), results } satisfies SubagentDetails,
 			};
 		},
