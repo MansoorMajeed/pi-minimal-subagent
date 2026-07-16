@@ -44,5 +44,6 @@ subagent({ tasks: [
 - **Second opinion:** `oracle` before a risky change — it challenges assumptions, doesn't edit.
 - **Research/recon** that would flood your context with raw output — delegate, get the distilled answer back.
 
-In zellij/tmux, each subagent streams live in its own pane and auto-closes when
-done. Pass `observe: false` to skip the panes.
+Each child streams compact activity into the parent tool row in any terminal.
+Expand the row to see its latest activity. Child calls are bounded by timeout
+and turn limits, and nested subagent registration is blocked.

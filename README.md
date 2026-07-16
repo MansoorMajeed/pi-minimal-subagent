@@ -1,18 +1,17 @@
 # pi-minimal-subagent
 
-A deliberately small Pi extension: **one tool** that fans out N child agents in
-parallel, returns their results, and (in zellij/tmux) shows each one live in its
-own pane. No chains, no acceptance gates, no background job tracking, no
-worktrees — the parent session stays the orchestrator.
+A deliberately small Pi extension: **one tool** that fans out focused child
+agents in parallel, streams compact activity inline, and returns their results.
+No chains, background jobs, wait tool, forked sessions, intercom, worktrees, or
+persistent child sessions — the parent stays the orchestrator.
 
-~700 lines. If you want the full orchestration framework, use
+If you need the full orchestration framework, use
 [`pi-subagents`](https://github.com/nicobailon/pi-subagents) instead.
 
 ## Install
 
-(via git ssh)
 ```bash
- pi install git:git@github.com:MansoorMajeed/pi-minimal-subagent.git
+pi install git:git@github.com:MansoorMajeed/pi-minimal-subagent.git
 ```
 
 ## Use
@@ -27,75 +26,145 @@ Run two reviewers in parallel: one on correctness, one on test coverage.
 Use scout to map the auth flow while a researcher checks the upstream API docs.
 ```
 
-Sequential work needs no special syntax — Pi just calls the tool again with the
-previous result baked into the next task.
-
-### The tool
+Sequential work needs no special syntax: Pi calls the tool again with the
+previous result included in the next task.
 
 ```ts
 subagent({
   tasks: [
-    { agent: "scout",    task: "map the auth flow",           model: "anthropic/claude-haiku-4-5" },
+    { agent: "scout", task: "map the auth flow", model: "anthropic/claude-haiku-4-5" },
     { agent: "reviewer", task: "review this diff for bugs" },
   ],
-  observe: true,   // default: true when zellij/tmux is detected
 })
 ```
 
-The tool's text content is a per-task summary; the structured results are on
-`details.results`, one per task: `{ agent, ok, answer, exitCode, logPath, timedOut, error? }`.
-Up to 8 tasks per call, run with a concurrency of 4; the call returns when every
-child is done. Use `subagent({ action: "list" })` to enumerate available agents.
+Up to 8 tasks run with concurrency 4. Use
+`subagent({ action: "list" })` to enumerate bundled and custom agents.
 
-## Models — use cheap ones where you can
+## Inline activity
 
-Two ways to pick a model (cheaper/faster for light work, stronger for hard work):
+While a call is running, its tool row updates in any terminal or multiplexer:
 
-- **Per task:** `model` field on a task (highest precedence).
-- **Per agent (default):** `model:` in the agent's frontmatter.
+```text
+● scout    read src/auth.ts
+● reviewer bash git diff --stat
+○ oracle   queued
+```
 
-If neither is set, the child inherits Pi's current default model. List options
-with `pi --list-models`.
+The collapsed view keeps one current line per child. Expand the tool row to see
+the latest three activities per child. Completed rows include turns, tokens,
+and cost when the provider reports them. Updates come directly from each
+child's JSONL event stream and are throttled to avoid TUI churn.
+
+There is no split-pane observer or `observe` parameter.
+
+## Models
+
+Model precedence is:
+
+1. `model` on an individual task.
+2. `model:` in the agent's frontmatter.
+3. Pi's current default model.
+
+Use cheaper/faster models for recon and stronger models for difficult review or
+implementation. List available models with `pi --list-models`.
 
 ## Agents
 
-An agent is a markdown file: frontmatter + a system-prompt body. Resolved from,
-lowest to highest precedence:
+An agent is a Markdown file containing frontmatter and a system-prompt body.
+Sources, lowest to highest precedence:
 
-1. bundled (`agents/` in this package)
+1. bundled (`agents/`)
 2. user (`~/.pi/agent/agents/`)
 3. project (`.pi/agents/`)
 
-Bundled: `scout`, `reviewer`, `planner`, `oracle`, `worker`. Frontmatter fields:
+The format remains compatible with pi-subagents/tmux-subagent agent files:
 
 ```yaml
 ---
 name: scout
-description: short description
-tools: read, grep, find, ls, bash   # builtin tool allowlist (string or YAML list; omit = all)
-thinking: medium                     # off | minimal | low | medium | high | xhigh
-model: anthropic/claude-haiku-4-5   # optional default model
-systemPromptMode: append             # append (default) | replace
+description: Fast codebase recon
+tools: read, grep, find, ls, bash
+thinking: medium
+model: anthropic/claude-haiku-4-5
+systemPromptMode: append
+inheritProjectContext: true
+maxTurns: 12
 ---
-Body becomes the child's system prompt.
+
+Agent system prompt.
 ```
 
-## The observer (zellij / tmux)
+Supported runtime frontmatter:
 
-When a multiplexer is detected, each subagent gets a live pane:
+| Field | Behavior |
+|---|---|
+| `model` | Default child model. |
+| `thinking` | Child thinking level unless the model already includes one. |
+| `tools` | Pi tool allowlist. Omitted keeps Pi's normal active tools. |
+| `systemPromptMode` | `append` (default) or `replace`. |
+| `extensions` | Omitted loads normal extensions; empty disables discovery; values explicitly allowlist extension paths. |
+| `inheritProjectContext` | Defaults to `true`; `false` passes `--no-context-files`. |
+| `maxTurns` | Positive integer hard cap; defaults to 20 completed assistant turns. |
 
-- **zellij:** a right-hand column splits into N stacked panes (one per agent),
-  focus returns to your Pi pane. Each pane streams the child's text and tool
-  calls, then **auto-closes ~4s after that agent finishes**.
-- **tmux:** best-effort equivalent via `split-window`.
-- **no multiplexer:** the tool prints a `tail -F` hint instead.
+Extension allowlist examples:
 
-Set `observe: false` to skip the panes.
+```yaml
+# Disable extension discovery for this child.
+extensions:
+
+# Or load only explicit extensions.
+extensions: /absolute/path/a.ts, /absolute/path/b.ts
+```
+
+Disabling extensions also removes extension-provided safety guards. Do not do it
+for a mutating worker unless its tool allowlist and execution environment are
+safe without those guards.
+
+## Safety and limits
+
+- Child processes receive `PI_MINIMAL_SUBAGENT_CHILD=1`; this package does not
+  register another `subagent` tool inside them, preventing recursive fan-out.
+- Children run with `--no-session` and a 10-minute wall-clock timeout.
+- `maxTurns` defaults to 20. A child may finish naturally on turn 20; it is
+  stopped only if it attempts turn 21. Its last completed answer is retained.
+- The parent abort signal terminates the child's whole process group, with a
+  SIGKILL fallback.
+
+## Results, usage, and large outputs
+
+The model-facing result is a per-task summary. Structured results are available
+on `details.results`, one per task:
+
+```text
+agent, ok, answer, inlineAnswer, outputPath?, exitCode, logPath,
+timedOut, turnLimitExceeded, error?, usage, activity
+```
+
+`answer` always retains the complete child response in structured details.
+Answers over 16 KiB are also written to `<task>-output.md` beside the JSONL log;
+`inlineAnswer` contains an approximately 8 KiB excerpt and the file path. If the
+file write fails, the full answer stays inline rather than being lost.
+
+`usage` aggregates provider-reported input, output, cache-read, cache-write,
+total/context tokens, cost, and assistant turns. Usage stays in details and TUI
+rendering rather than adding accounting prose to model context.
+
+Run artifacts live under `$TMPDIR/pi-minsub/<run>/` and include one JSONL event
+log per child plus any spilled Markdown output.
 
 ## How it works
 
-Each subagent is a headless `pi --print --mode json` child process. Its JSONL
-event stream is written to a per-run log under `$TMPDIR/pi-minsub/<run>/`. The
-parent parses the final `agent_end` event to recover the answer; the observer
-pane follows the same log and renders it live. Per-task timeout defaults to 10
-minutes.
+Each child is a headless `pi --print --mode json --no-session` process. The
+parent incrementally parses stdout, tees it to a JSONL log, derives activity and
+usage, and extracts the last assistant message. Calls remain synchronous: the
+parent tool returns only after every child completes, fails, times out, or hits
+its turn limit.
+
+## Development
+
+```bash
+npm test
+npm run check
+npm pack --dry-run
+```
