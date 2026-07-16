@@ -1,3 +1,5 @@
+import { stripVTControlCharacters } from "node:util";
+
 export type ActivityState = "queued" | "running" | "done" | "failed" | "timed_out" | "aborted" | "turn_limit";
 
 export interface UsageSummary {
@@ -22,6 +24,14 @@ export interface ChildActivity {
 
 const MAX_ACTIVITY_CHARS = 100;
 const MAX_RECENT = 3;
+const OSC_SEQUENCE = /(?:\u001b\]|\u009d)[\s\S]*?(?:\u0007|\u001b\\|\u009c|$)/g;
+const STRING_CONTROL_SEQUENCE = /(?:\u001b[PX^_]|[\u0090\u0098\u009e\u009f])[\s\S]*?(?:\u001b\\|\u009c|$)/g;
+
+/** Remove terminal control sequences while preserving ordinary whitespace. */
+export function sanitizeTerminalText(value: unknown): string {
+	return stripVTControlCharacters(String(value ?? "").replace(OSC_SEQUENCE, "").replace(STRING_CONTROL_SEQUENCE, ""))
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+}
 
 export class JsonLineParser {
 	private buffer = "";
@@ -64,7 +74,7 @@ export function snapshotActivity(activity: ChildActivity): ChildActivity {
 }
 
 function oneLine(value: unknown, max = MAX_ACTIVITY_CHARS): string {
-	const text = String(value ?? "").replace(/\s+/g, " ").trim();
+	const text = sanitizeTerminalText(value).replace(/\s+/g, " ").trim();
 	if (text.length <= max) return text;
 	return `${text.slice(0, max)}…`;
 }

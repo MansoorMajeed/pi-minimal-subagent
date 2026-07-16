@@ -22,6 +22,7 @@ import { DEFAULT_MAX_TURNS } from "./agent-options.ts";
 import { MINIMAL_SUBAGENT_CHILD_ENV } from "./child-boundary.ts";
 
 export const MAX_INLINE_ANSWER_BYTES = 16 * 1024;
+export const MAX_INLINE_ERROR_BYTES = 4 * 1024;
 const INLINE_EXCERPT_BYTES = 8 * 1024;
 
 export interface SubagentRunOptions {
@@ -78,6 +79,12 @@ function truncateUtf8(text: string, maxBytes: number): string {
 		output += character;
 	}
 	return output;
+}
+
+function boundedDiagnostic(text: string): string {
+	if (Buffer.byteLength(text, "utf-8") <= MAX_INLINE_ERROR_BYTES) return text;
+	const suffix = "\n[stderr truncated]";
+	return `${truncateUtf8(text, MAX_INLINE_ERROR_BYTES - Buffer.byteLength(suffix, "utf-8"))}${suffix}`;
 }
 
 export function spillLargeAnswer(
@@ -262,9 +269,10 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			);
 			const spilled = spillLargeAnswer(answer, outputFile);
 			const ok = !timedOut && !aborted && !turnLimitExceeded && exitCode === 0 && answer.length > 0;
-			const error = ok
+			const rawError = ok
 				? undefined
 				: (errorOverride ?? (aborted ? "aborted" : timedOut ? "timed out" : turnLimitExceeded ? `turn limit reached (${maxTurns})` : answer ? undefined : stderr.trim() || "no answer produced"));
+			const error = rawError ? boundedDiagnostic(rawError) : undefined;
 			if (!ok) {
 				activity.state = aborted ? "aborted" : timedOut ? "timed_out" : turnLimitExceeded ? "turn_limit" : "failed";
 				activity.current = error ?? activity.state;

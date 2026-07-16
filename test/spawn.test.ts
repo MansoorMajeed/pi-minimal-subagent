@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import { MAX_INLINE_ANSWER_BYTES, runSubagent, spillLargeAnswer } from "../src/spawn.ts";
+import { MAX_INLINE_ANSWER_BYTES, MAX_INLINE_ERROR_BYTES, runSubagent, spillLargeAnswer } from "../src/spawn.ts";
 
 function fakePi(dir: string, body: string): string {
 	const binDir = path.join(dir, "bin");
@@ -280,6 +280,22 @@ test("normal answers remain unchanged and spill failure falls back to full text"
 		throw new Error("disk full");
 	});
 	assert.deepEqual(failed, { inlineAnswer: large });
+});
+
+test("failed children return bounded stderr diagnostics", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `process.stderr.write("e".repeat(${MAX_INLINE_ERROR_BYTES + 1000})); process.exitCode = 1;`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.ok, false);
+		assert.ok(Buffer.byteLength(result.error!, "utf-8") <= MAX_INLINE_ERROR_BYTES);
+		assert.match(result.error!, /stderr truncated/);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("runSubagent returns usage and spills only model-facing large output", { concurrency: false }, async () => {

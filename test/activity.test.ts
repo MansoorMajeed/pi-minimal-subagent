@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyActivityEvent, createActivity, JsonLineParser } from "../src/activity.ts";
+import { applyActivityEvent, createActivity, JsonLineParser, sanitizeTerminalText } from "../src/activity.ts";
 
 test("JsonLineParser preserves partial chunks and ignores malformed lines", () => {
 	const parser = new JsonLineParser();
@@ -81,4 +81,17 @@ test("activity text is single-line, bounded, and deduplicated", () => {
 	assert.equal(first.includes("\n"), false);
 	assert.ok(first.length <= 101);
 	assert.equal(activity.recent.filter((item) => item === first).length, 1);
+});
+
+test("terminal text sanitizer removes ANSI, OSC, string controls, and raw controls", () => {
+	const unsafe = [
+		"before",
+		"\x1b[2J",
+		"\x1b]52;c;SGVsbG8=\x07",
+		"\x1b]0;title\x1b\\",
+		"\x1b_payload\x1b\\",
+		"\x00\x08\x7f\x85",
+		"after\nnext",
+	].join("");
+	assert.equal(sanitizeTerminalText(unsafe), "beforeafter\nnext");
 });

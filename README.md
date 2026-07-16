@@ -64,7 +64,7 @@ Model precedence is:
 
 1. `model` on an individual task.
 2. `model:` in the agent's frontmatter.
-3. Pi's current default model.
+3. Pi's configured default model.
 
 Use cheaper/faster models for recon and stronger models for difficult review or
 implementation. List available models with `pi --list-models`.
@@ -130,6 +130,8 @@ safe without those guards.
   stopped only if it attempts turn 21. Its last completed answer is retained.
 - The parent abort signal terminates the child's whole process group, with a
   SIGKILL fallback.
+- Child-derived terminal controls are stripped at the TUI boundary without
+  changing the stored or model-facing answer.
 
 ## Results, usage, and large outputs
 
@@ -144,7 +146,8 @@ timedOut, turnLimitExceeded, error?, usage, activity
 `answer` always retains the complete child response in structured details.
 Answers over 16 KiB are also written to `<task>-output.md` beside the JSONL log;
 `inlineAnswer` contains an approximately 8 KiB excerpt and the file path. If the
-file write fails, the full answer stays inline rather than being lost.
+file write fails, the full answer stays inline rather than being lost. Failed
+child stderr diagnostics are capped at 4 KiB.
 
 `usage` aggregates provider-reported input, output, cache-read, cache-write,
 total/context tokens, cost, and assistant turns. Usage stays in details and TUI

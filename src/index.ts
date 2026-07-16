@@ -9,7 +9,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { createActivity, type ChildActivity } from "./activity.ts";
+import { createActivity, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
@@ -177,10 +177,10 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 
 		renderCall(args: any, theme: any) {
 			if (args?.action) {
-				return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}`, 0, 0);
+				return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${sanitizeTerminalText(args.action)}`, 0, 0);
 			}
 			const n = args?.tasks?.length ?? 0;
-			const names = (args?.tasks ?? []).map((t: any) => t.agent).join(", ");
+			const names = (args?.tasks ?? []).map((t: any) => sanitizeTerminalText(t.agent)).join(", ");
 			return new Text(
 				`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", `×${n}`)}${names ? ` (${names})` : ""}`,
 				0,
@@ -192,7 +192,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			const details = result.details as SubagentDetails | undefined;
 			if (!details?.activities?.length) {
 				const text = result.content?.find((item: any) => item.type === "text")?.text ?? "(no output)";
-				return new Text(text, 0, 0);
+				return new Text(sanitizeTerminalText(text), 0, 0);
 			}
 
 			const lines: string[] = [];
@@ -210,15 +210,15 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				if (activity.usage.totalTokens > 0) stats.push(`${activity.usage.totalTokens.toLocaleString()} tok`);
 				if (activity.usage.cost > 0) stats.push(`$${activity.usage.cost.toFixed(4)}`);
 				const usage = stats.length ? theme.fg("dim", ` [${stats.join(" · ")}]`) : "";
-				lines.push(`${icon} ${theme.fg("toolTitle", theme.bold(activity.agent))} ${theme.fg("muted", activity.current)}${usage}`);
+				lines.push(`${icon} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(activity.agent)))} ${theme.fg("muted", sanitizeTerminalText(activity.current))}${usage}`);
 				if (expanded) {
-					for (const item of activity.recent) lines.push(`  ${theme.fg("dim", `↳ ${item}`)}`);
+					for (const item of activity.recent) lines.push(`  ${theme.fg("dim", `↳ ${sanitizeTerminalText(item)}`)}`);
 				}
 			}
 
 			if (expanded && !isPartial) {
 				const output = result.content?.find((item: any) => item.type === "text")?.text;
-				if (output) lines.push("", theme.fg("toolOutput", output));
+				if (output) lines.push("", theme.fg("toolOutput", sanitizeTerminalText(output)));
 			}
 			return new Text(lines.join("\n"), 0, 0);
 		},
