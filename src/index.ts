@@ -9,6 +9,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { createActivity, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
 import { launchObserver } from "./observe.ts";
@@ -69,6 +70,12 @@ function summarize(results: SubagentResult[]): string {
 	return parts.join("\n").trim();
 }
 
+interface SubagentDetails {
+	runDir: string;
+	activities: ChildActivity[];
+	results?: SubagentResult[];
+}
+
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
@@ -82,7 +89,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			"Use { action: 'list' } to see available agents (incl. custom ones) before picking.",
 		parameters: ToolParams,
 
-		async execute(_id, params, signal, _onUpdate, ctx) {
+		async execute(_id, params, signal, onUpdate, ctx) {
 			const agents = discoverAgents(ctx.cwd);
 
 			if (params.action === "list") {
@@ -115,8 +122,29 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const label = `${i + 1}-${slug(t.agent)}`;
 				const logPath = path.join(runDir, `${label}.jsonl`);
 				fs.writeFileSync(logPath, ""); // pre-create so the observer has a file to follow
-				return { task: t, cfg, label, logPath };
+				return { task: t, cfg, label, logPath, activity: createActivity(t.agent) };
 			});
+
+			let lastUpdateAt = 0;
+			let updateTimer: ReturnType<typeof setTimeout> | undefined;
+			const update = () => {
+				lastUpdateAt = Date.now();
+				updateTimer = undefined;
+				const done = planned.filter((item) => item.activity.state === "done" || !["queued", "running"].includes(item.activity.state)).length;
+				onUpdate?.({
+					content: [{ type: "text" as const, text: `Subagents: ${done}/${planned.length} complete` }],
+					details: {
+						runDir,
+						activities: planned.map((item) => ({ ...item.activity, recent: [...item.activity.recent], usage: { ...item.activity.usage } })),
+					} satisfies SubagentDetails,
+				});
+			};
+			const scheduleUpdate = () => {
+				const delay = Math.max(0, 150 - (Date.now() - lastUpdateAt));
+				if (delay === 0) update();
+				else if (!updateTimer) updateTimer = setTimeout(update, delay);
+			};
+			update();
 
 			const observe = params.observe ?? true;
 			let observerNote = "";
@@ -142,6 +170,10 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					cwd: ctx.cwd,
 					timeoutMs: DEFAULT_TIMEOUT_MS,
 					signal,
+					onActivity: (activity) => {
+						p.activity = activity;
+						scheduleUpdate();
+					},
 				}).then((r) => {
 					// Signal the observer pane to auto-close (covers failure/timeout
 					// cases where the child emits no terminal `agent_end` event).
@@ -153,10 +185,11 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					return r;
 				}),
 			);
+			if (updateTimer) clearTimeout(updateTimer);
 
 			return {
 				content: [{ type: "text" as const, text: summarize(results) + observerNote }],
-				details: { runDir, results },
+				details: { runDir, activities: results.map((result) => result.activity), results } satisfies SubagentDetails,
 			};
 		},
 
@@ -171,6 +204,36 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				0,
 				0,
 			);
+		},
+
+		renderResult(result: any, { expanded, isPartial }: any, theme: any) {
+			const details = result.details as SubagentDetails | undefined;
+			if (!details?.activities?.length) {
+				const text = result.content?.find((item: any) => item.type === "text")?.text ?? "(no output)";
+				return new Text(text, 0, 0);
+			}
+
+			const lines: string[] = [];
+			for (const activity of details.activities) {
+				const failed = !["queued", "running", "done"].includes(activity.state);
+				const icon = activity.state === "done"
+					? theme.fg("success", "✓")
+					: failed
+						? theme.fg("error", "✗")
+						: activity.state === "queued"
+							? theme.fg("dim", "○")
+							: theme.fg("accent", "●");
+				lines.push(`${icon} ${theme.fg("toolTitle", theme.bold(activity.agent))} ${theme.fg("muted", activity.current)}`);
+				if (expanded) {
+					for (const item of activity.recent) lines.push(`  ${theme.fg("dim", `↳ ${item}`)}`);
+				}
+			}
+
+			if (expanded && !isPartial) {
+				const output = result.content?.find((item: any) => item.type === "text")?.text;
+				if (output) lines.push("", theme.fg("toolOutput", output));
+			}
+			return new Text(lines.join("\n"), 0, 0);
 		},
 	});
 }

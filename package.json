@@ -5,6 +5,9 @@
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "pi-extension", "pi", "subagent", "zellij"],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
   "pi": {
     "extensions": ["./src/index.ts"],
     "skills": ["./skills"]

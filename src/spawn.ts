@@ -11,6 +11,13 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+	applyActivityEvent,
+	createActivity,
+	JsonLineParser,
+	snapshotActivity,
+	type ChildActivity,
+} from "./activity.ts";
 
 export interface SubagentRunOptions {
 	task: string;
@@ -31,6 +38,8 @@ export interface SubagentRunOptions {
 	timeoutMs: number;
 	/** Abort signal from the host tool call; aborting kills the child `pi`. */
 	signal?: AbortSignal;
+	/** Receives snapshots derived from the child's JSONL event stream. */
+	onActivity?: (activity: ChildActivity) => void;
 }
 
 export interface SubagentResult {
@@ -41,6 +50,7 @@ export interface SubagentResult {
 	logPath: string;
 	timedOut: boolean;
 	error?: string;
+	activity: ChildActivity;
 }
 
 /** Pull the final assistant text out of a captured JSONL transcript. */
@@ -107,6 +117,14 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let child: ReturnType<typeof spawn> | undefined;
 		const signal = opts.signal;
+		const activity = createActivity(opts.label);
+		const eventParser = new JsonLineParser();
+
+		const emitActivity = () => opts.onActivity?.(snapshotActivity(activity));
+		const processEvent = (event: unknown) => {
+			applyActivityEvent(activity, event);
+			emitActivity();
+		};
 
 		// Kill the child's whole process group (it is a group leader via
 		// `detached: true`), so pi's own subprocesses don't linger and keep the
@@ -156,7 +174,18 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			const error = ok
 				? undefined
 				: (errorOverride ?? (aborted ? "aborted" : timedOut ? "timed out" : answer ? undefined : stderr.trim() || "no answer produced"));
-			resolve({ agent: opts.label, ok, answer, exitCode, logPath: opts.logPath, timedOut, error });
+			if (!ok) {
+				activity.state = aborted ? "aborted" : timedOut ? "timed_out" : "failed";
+				activity.current = error ?? activity.state;
+				if (activity.recent[activity.recent.length - 1] !== activity.current) activity.recent.push(activity.current);
+				activity.recent = activity.recent.slice(-3);
+			} else if (activity.state !== "done") {
+				activity.state = "done";
+				activity.current = "done";
+				activity.recent = [...activity.recent.filter((item) => item !== "done"), "done"].slice(-3);
+			}
+			emitActivity();
+			resolve({ agent: opts.label, ok, answer, exitCode, logPath: opts.logPath, timedOut, error, activity: snapshotActivity(activity) });
 		};
 
 		try {
@@ -193,6 +222,10 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				stdio: ["ignore", "pipe", "pipe"],
 				detached: true, // own process group so killTree can reap descendants
 			});
+			activity.state = "running";
+			activity.current = "starting";
+			activity.recent = [...activity.recent, "starting"].slice(-3);
+			emitActivity();
 
 			timer = setTimeout(() => {
 				timedOut = true;
@@ -207,12 +240,16 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				const s = chunk.toString("utf-8");
 				captured += s;
 				if (!streamDead && logStream) logStream.write(s);
+				for (const event of eventParser.push(s)) processEvent(event);
 			});
 			child.stderr?.on("data", (chunk: Buffer) => {
 				stderr += chunk.toString("utf-8");
 			});
 			child.on("error", (err) => settle(null, `failed to spawn pi: ${err.message}`));
-			child.on("close", (code) => settle(code));
+			child.on("close", (code) => {
+				for (const event of eventParser.flush()) processEvent(event);
+				settle(code);
+			});
 		} catch (err: any) {
 			settle(null, `subagent setup failed: ${err?.message ?? String(err)}`);
 		}
