@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import { runSubagent } from "../src/spawn.ts";
+import { MAX_INLINE_ANSWER_BYTES, runSubagent, spillLargeAnswer } from "../src/spawn.ts";
 
 function fakePi(dir: string, body: string): string {
 	const binDir = path.join(dir, "bin");
@@ -157,6 +157,65 @@ test("turn limit does not reject a natural completion on the final turn", { conc
 		assert.equal(result.ok, true);
 		assert.equal(result.turnLimitExceeded, false);
 		assert.equal(result.answer, "final answer");
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("large answers spill to Markdown with a Unicode-safe bounded excerpt", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const outputPath = path.join(dir, "scout-output.md");
+	const answer = `prefix ${"🙂".repeat(MAX_INLINE_ANSWER_BYTES)} suffix`;
+	try {
+		const spilled = spillLargeAnswer(answer, outputPath);
+		assert.equal(spilled.outputPath, outputPath);
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), answer);
+		assert.ok(Buffer.byteLength(spilled.inlineAnswer, "utf-8") < MAX_INLINE_ANSWER_BYTES);
+		assert.equal(spilled.inlineAnswer.includes("�"), false);
+		assert.match(spilled.inlineAnswer, /Full output saved to:/);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("normal answers remain unchanged and spill failure falls back to full text", () => {
+	const answer = "normal answer";
+	assert.deepEqual(spillLargeAnswer(answer, "/unused"), { inlineAnswer: answer });
+
+	const large = "x".repeat(MAX_INLINE_ANSWER_BYTES + 1);
+	const failed = spillLargeAnswer(large, "/unused", () => {
+		throw new Error("disk full");
+	});
+	assert.deepEqual(failed, { inlineAnswer: large });
+});
+
+test("runSubagent returns usage and spills only model-facing large output", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const answer = "z".repeat(MAX_INLINE_ANSWER_BYTES + 1);
+	const binDir = fakePi(
+		dir,
+		`const message = {role:"assistant",content:[{type:"text",text:${JSON.stringify(answer)}}],usage:{input:12,output:4,cacheRead:3,cacheWrite:1,totalTokens:20,cost:{total:0.02}}};
+		process.stdout.write(JSON.stringify({type:"message_end",message}) + "\\n");
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]}) + "\\n");`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.answer, answer);
+		assert.ok(result.inlineAnswer.length < answer.length);
+		assert.equal(fs.readFileSync(result.outputPath!, "utf-8"), answer);
+		assert.deepEqual(result.usage, {
+			input: 12,
+			output: 4,
+			cacheRead: 3,
+			cacheWrite: 1,
+			totalTokens: 20,
+			contextTokens: 20,
+			cost: 0.02,
+			turns: 1,
+		});
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });

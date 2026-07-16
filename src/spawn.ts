@@ -20,6 +20,9 @@ import {
 import { DEFAULT_MAX_TURNS } from "./agent-options.ts";
 import { MINIMAL_SUBAGENT_CHILD_ENV } from "./child-boundary.ts";
 
+export const MAX_INLINE_ANSWER_BYTES = 16 * 1024;
+const INLINE_EXCERPT_BYTES = 8 * 1024;
+
 export interface SubagentRunOptions {
 	task: string;
 	/** Display + filename label (the agent name). */
@@ -53,12 +56,45 @@ export interface SubagentResult {
 	agent: string;
 	ok: boolean;
 	answer: string;
+	inlineAnswer: string;
+	outputPath?: string;
 	exitCode: number | null;
 	logPath: string;
 	timedOut: boolean;
 	turnLimitExceeded: boolean;
 	error?: string;
 	activity: ChildActivity;
+	usage: ChildActivity["usage"];
+}
+
+function truncateUtf8(text: string, maxBytes: number): string {
+	let bytes = 0;
+	let output = "";
+	for (const character of text) {
+		const size = Buffer.byteLength(character, "utf-8");
+		if (bytes + size > maxBytes) break;
+		bytes += size;
+		output += character;
+	}
+	return output;
+}
+
+export function spillLargeAnswer(
+	answer: string,
+	outputPath: string,
+	writeFile: (path: string, content: string, encoding: BufferEncoding) => void = fs.writeFileSync,
+): { inlineAnswer: string; outputPath?: string } {
+	if (Buffer.byteLength(answer, "utf-8") <= MAX_INLINE_ANSWER_BYTES) return { inlineAnswer: answer };
+	try {
+		writeFile(outputPath, answer, "utf-8");
+		const excerpt = truncateUtf8(answer, INLINE_EXCERPT_BYTES);
+		return {
+			inlineAnswer: `${excerpt}\n\n[Output truncated; Full output saved to: ${outputPath}]`,
+			outputPath,
+		};
+	} catch {
+		return { inlineAnswer: answer };
+	}
 }
 
 /** Pull the final assistant text out of a captured JSONL transcript. */
@@ -205,6 +241,11 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			settled = true;
 			cleanup();
 			const answer = extractFinalAnswer(captured);
+			const outputFile = path.join(
+				path.dirname(opts.logPath),
+				`${path.basename(opts.logPath, path.extname(opts.logPath))}-output.md`,
+			);
+			const spilled = spillLargeAnswer(answer, outputFile);
 			const ok = !timedOut && !aborted && !turnLimitExceeded && exitCode === 0 && answer.length > 0;
 			const error = ok
 				? undefined
@@ -224,12 +265,15 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				agent: opts.label,
 				ok,
 				answer,
+				inlineAnswer: spilled.inlineAnswer,
+				outputPath: spilled.outputPath,
 				exitCode,
 				logPath: opts.logPath,
 				timedOut,
 				turnLimitExceeded,
 				error,
 				activity: snapshotActivity(activity),
+				usage: { ...activity.usage },
 			});
 		};
 

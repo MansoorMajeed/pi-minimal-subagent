@@ -6,6 +6,7 @@ export interface UsageSummary {
 	cacheRead: number;
 	cacheWrite: number;
 	totalTokens: number;
+	contextTokens: number;
 	cost: number;
 	turns: number;
 }
@@ -54,7 +55,7 @@ export function createActivity(agent: string): ChildActivity {
 		state: "queued",
 		current: "queued",
 		recent: ["queued"],
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 },
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, contextTokens: 0, cost: 0, turns: 0 },
 	};
 }
 
@@ -116,6 +117,7 @@ function addUsage(activity: ChildActivity, message: any): void {
 	activity.usage.cacheRead += Number(usage.cacheRead) || 0;
 	activity.usage.cacheWrite += Number(usage.cacheWrite) || 0;
 	activity.usage.totalTokens += Number(usage.totalTokens) || 0;
+	if (Number(usage.totalTokens) > 0) activity.usage.contextTokens = Number(usage.totalTokens);
 	activity.usage.cost += Number(usage.cost?.total) || 0;
 }
 

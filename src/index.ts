@@ -59,7 +59,7 @@ function summarize(results: SubagentResult[]): string {
 		const r = results[i];
 		const status = r.ok ? "ok" : r.timedOut ? "TIMED OUT" : r.turnLimitExceeded ? "TURN LIMIT" : "FAILED";
 		parts.push(`### [${i + 1}] ${r.agent} — ${status}`);
-		if (r.answer) parts.push(r.answer);
+		if (r.inlineAnswer) parts.push(r.inlineAnswer);
 		else if (r.error) parts.push(`(no answer: ${r.error})`);
 		parts.push(`\n_log: ${r.logPath}_`);
 		parts.push("");
@@ -205,7 +205,12 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						: activity.state === "queued"
 							? theme.fg("dim", "○")
 							: theme.fg("accent", "●");
-				lines.push(`${icon} ${theme.fg("toolTitle", theme.bold(activity.agent))} ${theme.fg("muted", activity.current)}`);
+				const stats: string[] = [];
+				if (activity.usage.turns > 0) stats.push(`${activity.usage.turns} turn${activity.usage.turns === 1 ? "" : "s"}`);
+				if (activity.usage.totalTokens > 0) stats.push(`${activity.usage.totalTokens.toLocaleString()} tok`);
+				if (activity.usage.cost > 0) stats.push(`$${activity.usage.cost.toFixed(4)}`);
+				const usage = stats.length ? theme.fg("dim", ` [${stats.join(" · ")}]`) : "";
+				lines.push(`${icon} ${theme.fg("toolTitle", theme.bold(activity.agent))} ${theme.fg("muted", activity.current)}${usage}`);
 				if (expanded) {
 					for (const item of activity.recent) lines.push(`  ${theme.fg("dim", `↳ ${item}`)}`);
 				}
