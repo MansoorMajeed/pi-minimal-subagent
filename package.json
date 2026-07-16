@@ -1,10 +1,14 @@
 {
   "name": "pi-minimal-subagent",
   "version": "0.1.0",
-  "description": "Minimal Pi extension: one tool that fans out N child agents in parallel and (optionally) shows them live in a zellij split",
+  "description": "Minimal Pi extension for synchronous parallel child agents with inline activity",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "pi-extension", "pi", "subagent", "zellij"],
+  "keywords": ["pi-package", "pi-extension", "pi", "subagent", "parallel"],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "check": "npm test"
+  },
   "pi": {
     "extensions": ["./src/index.ts"],
     "skills": ["./skills"]

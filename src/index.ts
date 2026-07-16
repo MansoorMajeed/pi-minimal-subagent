@@ -1,6 +1,6 @@
 /**
  * pi-minimal-subagent — one tool that fans out N child `pi` agents in parallel,
- * shows each live in a zellij split (optional), and returns aggregated results.
+ * streams compact activity inline and returns aggregated results.
  */
 
 import * as fs from "node:fs";
@@ -9,9 +9,10 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { createActivity, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
+import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
-import { launchObserver } from "./observe.ts";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TASKS = 8;
@@ -30,9 +31,6 @@ const ToolParams = Type.Object({
 			}),
 			{ description: "One entry per subagent. Multiple entries run concurrently.", minItems: 1, maxItems: MAX_TASKS },
 		),
-	),
-	observe: Type.Optional(
-		Type.Boolean({ description: "Show each subagent live in a zellij/tmux split. Default: true when a multiplexer is detected." }),
 	),
 });
 
@@ -59,9 +57,9 @@ function summarize(results: SubagentResult[]): string {
 	const parts: string[] = [];
 	for (let i = 0; i < results.length; i++) {
 		const r = results[i];
-		const status = r.ok ? "ok" : r.timedOut ? "TIMED OUT" : "FAILED";
+		const status = r.ok ? "ok" : r.timedOut ? "TIMED OUT" : r.turnLimitExceeded ? "TURN LIMIT" : "FAILED";
 		parts.push(`### [${i + 1}] ${r.agent} — ${status}`);
-		if (r.answer) parts.push(r.answer);
+		if (r.inlineAnswer) parts.push(r.inlineAnswer);
 		else if (r.error) parts.push(`(no answer: ${r.error})`);
 		parts.push(`\n_log: ${r.logPath}_`);
 		parts.push("");
@@ -69,7 +67,15 @@ function summarize(results: SubagentResult[]): string {
 	return parts.join("\n").trim();
 }
 
+interface SubagentDetails {
+	runDir: string;
+	activities: ChildActivity[];
+	results?: SubagentResult[];
+}
+
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
+	if (isMinimalSubagentChild()) return;
+
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -78,11 +84,11 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			"Each task names an agent and a concrete instruction; multiple tasks run concurrently. " +
 			"Set a per-task `model` to use a faster/cheaper model for lighter work (e.g. a small model for recon, a stronger one for review). " +
 			"Sequential work = call this tool again with the previous result baked into the next task. " +
-			"With a zellij/tmux multiplexer, each subagent streams live in its own pane (observe). " +
+			"Each child streams compact live activity in the tool result. " +
 			"Use { action: 'list' } to see available agents (incl. custom ones) before picking.",
 		parameters: ToolParams,
 
-		async execute(_id, params, signal, _onUpdate, ctx) {
+		async execute(_id, params, signal, onUpdate, ctx) {
 			const agents = discoverAgents(ctx.cwd);
 
 			if (params.action === "list") {
@@ -114,20 +120,30 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const cfg = agents.get(t.agent) as AgentConfig;
 				const label = `${i + 1}-${slug(t.agent)}`;
 				const logPath = path.join(runDir, `${label}.jsonl`);
-				fs.writeFileSync(logPath, ""); // pre-create so the observer has a file to follow
-				return { task: t, cfg, label, logPath };
+				fs.writeFileSync(logPath, "");
+				return { task: t, cfg, label, logPath, activity: createActivity(t.agent) };
 			});
 
-			const observe = params.observe ?? true;
-			let observerNote = "";
-			if (observe) {
-				const obs = launchObserver(
-					planned.map((p) => ({ label: p.task.agent, logPath: p.logPath })),
-				);
-				observerNote = obs.launched
-					? `\n(observing ${planned.length} subagent(s) in a ${obs.mux} split)`
-					: `\n(no multiplexer detected — watch with: tail -F ${runDir}/*.jsonl)`;
-			}
+			let lastUpdateAt = 0;
+			let updateTimer: ReturnType<typeof setTimeout> | undefined;
+			const update = () => {
+				lastUpdateAt = Date.now();
+				updateTimer = undefined;
+				const done = planned.filter((item) => item.activity.state === "done" || !["queued", "running"].includes(item.activity.state)).length;
+				onUpdate?.({
+					content: [{ type: "text" as const, text: `Subagents: ${done}/${planned.length} complete` }],
+					details: {
+						runDir,
+						activities: planned.map((item) => ({ ...item.activity, recent: [...item.activity.recent], usage: { ...item.activity.usage } })),
+					} satisfies SubagentDetails,
+				});
+			};
+			const scheduleUpdate = () => {
+				const delay = Math.max(0, 150 - (Date.now() - lastUpdateAt));
+				if (delay === 0) update();
+				else if (!updateTimer) updateTimer = setTimeout(update, delay);
+			};
+			update();
 
 			const results = await runPool(planned, MAX_CONCURRENCY, (p) =>
 				runSubagent({
@@ -137,40 +153,74 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					model: p.task.model ?? p.cfg.model,
 					thinking: p.cfg.thinking,
 					tools: p.cfg.tools,
+					extensions: p.cfg.extensions,
+					inheritProjectContext: p.cfg.inheritProjectContext,
+					maxTurns: p.cfg.maxTurns,
 					systemPrompt: p.cfg.systemPrompt,
 					systemPromptMode: p.cfg.systemPromptMode,
 					cwd: ctx.cwd,
 					timeoutMs: DEFAULT_TIMEOUT_MS,
 					signal,
-				}).then((r) => {
-					// Signal the observer pane to auto-close (covers failure/timeout
-					// cases where the child emits no terminal `agent_end` event).
-					try {
-						fs.writeFileSync(`${p.logPath}.done`, "");
-					} catch {
-						/* observer marker is best-effort */
-					}
-					return r;
+					onActivity: (activity) => {
+						p.activity = activity;
+						scheduleUpdate();
+					},
 				}),
 			);
+			if (updateTimer) clearTimeout(updateTimer);
 
 			return {
-				content: [{ type: "text" as const, text: summarize(results) + observerNote }],
-				details: { runDir, results },
+				content: [{ type: "text" as const, text: summarize(results) }],
+				details: { runDir, activities: results.map((result) => result.activity), results } satisfies SubagentDetails,
 			};
 		},
 
 		renderCall(args: any, theme: any) {
 			if (args?.action) {
-				return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}`, 0, 0);
+				return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${sanitizeTerminalText(args.action)}`, 0, 0);
 			}
 			const n = args?.tasks?.length ?? 0;
-			const names = (args?.tasks ?? []).map((t: any) => t.agent).join(", ");
+			const names = (args?.tasks ?? []).map((t: any) => sanitizeTerminalText(t.agent)).join(", ");
 			return new Text(
 				`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", `×${n}`)}${names ? ` (${names})` : ""}`,
 				0,
 				0,
 			);
+		},
+
+		renderResult(result: any, { expanded, isPartial }: any, theme: any) {
+			const details = result.details as SubagentDetails | undefined;
+			if (!details?.activities?.length) {
+				const text = result.content?.find((item: any) => item.type === "text")?.text ?? "(no output)";
+				return new Text(sanitizeTerminalText(text), 0, 0);
+			}
+
+			const lines: string[] = [];
+			for (const activity of details.activities) {
+				const failed = !["queued", "running", "done"].includes(activity.state);
+				const icon = activity.state === "done"
+					? theme.fg("success", "✓")
+					: failed
+						? theme.fg("error", "✗")
+						: activity.state === "queued"
+							? theme.fg("dim", "○")
+							: theme.fg("accent", "●");
+				const stats: string[] = [];
+				if (activity.usage.turns > 0) stats.push(`${activity.usage.turns} turn${activity.usage.turns === 1 ? "" : "s"}`);
+				if (activity.usage.totalTokens > 0) stats.push(`${activity.usage.totalTokens.toLocaleString()} tok`);
+				if (activity.usage.cost > 0) stats.push(`$${activity.usage.cost.toFixed(4)}`);
+				const usage = stats.length ? theme.fg("dim", ` [${stats.join(" · ")}]`) : "";
+				lines.push(`${icon} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(activity.agent)))} ${theme.fg("muted", sanitizeTerminalText(activity.current))}${usage}`);
+				if (expanded) {
+					for (const item of activity.recent) lines.push(`  ${theme.fg("dim", `↳ ${sanitizeTerminalText(item)}`)}`);
+				}
+			}
+
+			if (expanded && !isPartial) {
+				const output = result.content?.find((item: any) => item.type === "text")?.text;
+				if (output) lines.push("", theme.fg("toolOutput", sanitizeTerminalText(output)));
+			}
+			return new Text(lines.join("\n"), 0, 0);
 		},
 	});
 }
