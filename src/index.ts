@@ -94,11 +94,15 @@ function renderStatusRow(row: StatusRow, theme: any): string {
 }
 
 class SubagentStatusComponent implements Component {
-	constructor(
-		private rows: StatusRow[],
-		private output: string | undefined,
-		private theme: any,
-	) {}
+	private rows: StatusRow[];
+	private output: string | undefined;
+	private theme: any;
+
+	constructor(rows: StatusRow[], output: string | undefined, theme: any) {
+		this.rows = rows;
+		this.output = output;
+		this.theme = theme;
+	}
 
 	render(width: number): string[] {
 		const available = Math.max(1, width);
