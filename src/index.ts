@@ -124,6 +124,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		description:
 			"Fan out one or more focused child agents in parallel and get their results back. " +
 			"Each task names an agent and a concrete instruction; multiple tasks run concurrently. " +
+			"Children cannot see the parent conversation, so make every task self-contained. " +
 			"Set a per-task `model` to use a faster/cheaper model for lighter work (e.g. a small model for recon, a stronger one for review). " +
 			"Sequential work = call this tool again with the previous result baked into the next task. " +
 			"Each child streams compact live activity in the tool result. " +
