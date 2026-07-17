@@ -7,12 +7,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createActivity, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
+import { buildStatusRows, type StatusHeaderRow, type StatusRow } from "./status-layout.ts";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TASKS = 8;
@@ -71,6 +72,47 @@ interface SubagentDetails {
 	runDir: string;
 	activities: ChildActivity[];
 	results?: SubagentResult[];
+}
+
+function statusIcon(row: StatusHeaderRow, theme: any): string {
+	if (row.state === "done") return theme.fg("success", "✓");
+	if (row.state === "queued") return theme.fg("dim", "○");
+	if (row.state === "running") return theme.fg("accent", "●");
+	return theme.fg("error", "✗");
+}
+
+function renderStatusRow(row: StatusRow, theme: any): string {
+	if (row.kind === "header") {
+		const state = row.state.replaceAll("_", " ");
+		const stateColor = row.state === "done" ? "success" : row.state === "running" ? "accent" : row.state === "queued" ? "dim" : "error";
+		const usage = row.usage ? theme.fg("dim", ` ${row.usage}`) : "";
+		return `${statusIcon(row, theme)} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(row.agent)))} ${theme.fg(stateColor, state)}${usage}`;
+	}
+	if (!row.text) return "";
+	const text = row.historical ? `↳ ${sanitizeTerminalText(row.text)}` : sanitizeTerminalText(row.text);
+	return `  ${theme.fg(row.historical ? "dim" : "muted", text)}`;
+}
+
+class SubagentStatusComponent implements Component {
+	private rows: StatusRow[];
+	private output: string | undefined;
+	private theme: any;
+
+	constructor(rows: StatusRow[], output: string | undefined, theme: any) {
+		this.rows = rows;
+		this.output = output;
+		this.theme = theme;
+	}
+
+	render(width: number): string[] {
+		const available = Math.max(1, width);
+		const lines = this.rows.map((row) => truncateToWidth(renderStatusRow(row, this.theme), available, "…"));
+		if (!this.output) return lines;
+		const output = new Text(this.theme.fg("toolOutput", sanitizeTerminalText(this.output)), 0, 0).render(available);
+		return [...lines, "", ...output];
+	}
+
+	invalidate(): void {}
 }
 
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
@@ -195,32 +237,11 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				return new Text(sanitizeTerminalText(text), 0, 0);
 			}
 
-			const lines: string[] = [];
-			for (const activity of details.activities) {
-				const failed = !["queued", "running", "done"].includes(activity.state);
-				const icon = activity.state === "done"
-					? theme.fg("success", "✓")
-					: failed
-						? theme.fg("error", "✗")
-						: activity.state === "queued"
-							? theme.fg("dim", "○")
-							: theme.fg("accent", "●");
-				const stats: string[] = [];
-				if (activity.usage.turns > 0) stats.push(`${activity.usage.turns} turn${activity.usage.turns === 1 ? "" : "s"}`);
-				if (activity.usage.totalTokens > 0) stats.push(`${activity.usage.totalTokens.toLocaleString()} tok`);
-				if (activity.usage.cost > 0) stats.push(`$${activity.usage.cost.toFixed(4)}`);
-				const usage = stats.length ? theme.fg("dim", ` [${stats.join(" · ")}]`) : "";
-				lines.push(`${icon} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(activity.agent)))} ${theme.fg("muted", sanitizeTerminalText(activity.current))}${usage}`);
-				if (expanded) {
-					for (const item of activity.recent) lines.push(`  ${theme.fg("dim", `↳ ${sanitizeTerminalText(item)}`)}`);
-				}
-			}
-
+			let output: string | undefined;
 			if (expanded && !isPartial) {
-				const output = result.content?.find((item: any) => item.type === "text")?.text;
-				if (output) lines.push("", theme.fg("toolOutput", sanitizeTerminalText(output)));
+				output = result.content?.find((item: any) => item.type === "text")?.text;
 			}
-			return new Text(lines.join("\n"), 0, 0);
+			return new SubagentStatusComponent(buildStatusRows(details.activities, expanded), output, theme);
 		},
 	});
 }
