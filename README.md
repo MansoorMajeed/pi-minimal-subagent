@@ -111,7 +111,7 @@ Supported runtime frontmatter:
 | `systemPromptMode` | `append` (default) or `replace`. |
 | `extensions` | Omitted loads normal extensions; empty disables discovery; values explicitly allowlist extension paths. |
 | `inheritProjectContext` | Defaults to `true`; `false` passes `--no-context-files`. |
-| `maxTurns` | Positive integer hard cap; defaults to 20 completed assistant turns. |
+| `maxTurns` | Positive integer hard cap; defaults to 50 completed assistant turns. |
 
 Extension allowlist examples:
 
@@ -132,8 +132,8 @@ safe without those guards.
 - Child processes receive `PI_MINIMAL_SUBAGENT_CHILD=1`; this package does not
   register another `subagent` tool inside them, preventing recursive fan-out.
 - Children run with `--no-session` and a 10-minute wall-clock timeout.
-- `maxTurns` defaults to 20. A child may finish naturally on turn 20; it is
-  stopped only if it attempts turn 21. Its last completed answer is retained.
+- `maxTurns` defaults to 50. A child may finish naturally on turn 50; it is
+  stopped only if it attempts turn 51. Its last completed answer is retained.
 - The parent abort signal terminates the child's whole process group, with a
   SIGKILL fallback.
 - Child-derived terminal controls are stripped at the TUI boundary without

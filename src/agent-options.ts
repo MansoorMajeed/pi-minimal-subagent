@@ -1,4 +1,4 @@
-export const DEFAULT_MAX_TURNS = 20;
+export const DEFAULT_MAX_TURNS = 50;
 
 export interface AgentRuntimeOptions {
 	extensions?: string[];
