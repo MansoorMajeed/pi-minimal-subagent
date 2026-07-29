@@ -43,24 +43,27 @@ Up to 8 tasks run with concurrency 4. Use
 
 ## Inline activity
 
-While a call is running, its tool row updates in any terminal or multiplexer:
+While a call is running, each child keeps a six-row status tail in any terminal
+or multiplexer:
 
 ```text
-● scout running
-  read src/auth.ts
-● reviewer running
-  bash git diff --stat
-○ oracle queued
-  queued
+● scout running model: anthropic/claude-haiku-4-5
+  ↳ queued
+  ↳ started
+  ↳ thinking
+  ↳ read src/auth.ts
+  ↳ bash git diff --stat
 ```
 
-The collapsed view keeps exactly two display rows per child: a status header
-and its current activity. Press `Ctrl+O` to expand it to exactly four status
-rows per child: the header and three recent activities, padded until history
-fills in. Status rows are clipped to the terminal width instead of wrapping, so
-the block stays in place while activity changes. Completed headers include
-turns, tokens, and cost when the provider reports them. Updates come directly
-from each child's JSONL event stream and are throttled to avoid TUI churn.
+The status always uses exactly six display rows per child: a header and the five
+most recent activities, padded above until history fills in. `Ctrl+O` does not
+change the status block; after completion it shows or hides the full child
+output below it. Status rows are clipped to the terminal width instead of
+wrapping, so the block stays in place while activity changes. The header shows
+the configured model until the child reports its resolved provider/model, and
+includes turns, tokens, and cost when available. Updates come directly from
+each child's JSONL event stream and TUI rendering is throttled to avoid churn;
+streaming text replaces one live tail entry instead of adding a row per delta.
 
 There is no split-pane observer or `observe` parameter.
 
