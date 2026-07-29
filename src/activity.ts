@@ -81,18 +81,19 @@ function oneLine(value: unknown, max = MAX_ACTIVITY_CHARS): string {
 	return `${text.slice(0, max)}…`;
 }
 
-function setCurrent(activity: ChildActivity, text: string, replaceLast = false): void {
+function setCurrent(activity: ChildActivity, text: string, replaceLast = false): boolean {
 	const normalized = oneLine(text);
-	if (!normalized) return;
+	if (!normalized) return false;
 	activity.current = normalized;
 	if (replaceLast && activity.recent.length > 0) {
 		activity.recent[activity.recent.length - 1] = normalized;
-		return;
+		return true;
 	}
 	if (activity.recent[activity.recent.length - 1] !== normalized) {
 		activity.recent.push(normalized);
 		if (activity.recent.length > MAX_RECENT_ACTIVITY) activity.recent.splice(0, activity.recent.length - MAX_RECENT_ACTIVITY);
 	}
+	return true;
 }
 
 function captureModel(activity: ChildActivity, message: any): void {
@@ -168,8 +169,8 @@ export function applyActivityEvent(activity: ChildActivity, rawEvent: unknown): 
 			const update = event.assistantMessageEvent;
 			if (update?.type === "text_delta" && typeof update.delta === "string") {
 				const continuingStream = !!activity.streamText;
-				activity.streamText = `${activity.streamText ?? ""}${update.delta}`.slice(-300);
-				setCurrent(activity, activity.streamText, continuingStream);
+				const streamText = `${activity.streamText ?? ""}${update.delta}`.slice(-300);
+				activity.streamText = setCurrent(activity, streamText, continuingStream) ? streamText : "";
 			} else if (update?.type === "toolcall_end" && update.toolCall) {
 				activity.streamText = "";
 				setCurrent(activity, toolActivity(update.toolCall.name, update.toolCall.arguments));

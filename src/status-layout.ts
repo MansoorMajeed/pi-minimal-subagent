@@ -1,4 +1,4 @@
-import type { ActivityState, ChildActivity, UsageSummary } from "./activity.ts";
+import { MAX_RECENT_ACTIVITY, type ActivityState, type ChildActivity, type UsageSummary } from "./activity.ts";
 
 export interface StatusHeaderRow {
 	kind: "header";
@@ -35,8 +35,8 @@ export function buildStatusRows(activities: ChildActivity[]): StatusRow[] {
 			usage: formatUsage(activity.usage),
 		});
 
-		const recent = activity.recent.slice(-5);
-		for (let i = recent.length; i < 5; i++) rows.push({ kind: "detail", text: "", historical: true });
+		const recent = activity.recent.slice(-MAX_RECENT_ACTIVITY);
+		for (let i = recent.length; i < MAX_RECENT_ACTIVITY; i++) rows.push({ kind: "detail", text: "", historical: true });
 		for (const text of recent) rows.push({ kind: "detail", text, historical: true });
 	}
 	return rows;

@@ -89,6 +89,7 @@ test("tool completion ends the current streaming tail entry", () => {
 	const activity = createActivity("worker");
 	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Mapping" } });
 	applyActivityEvent(activity, { type: "tool_execution_end", toolName: "read", isError: false });
+	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "\n" } });
 	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Next" } });
 
 	assert.deepEqual(activity.recent, ["queued", "Mapping", "read finished", "Next"]);
