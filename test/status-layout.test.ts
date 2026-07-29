@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildStatusRows } from "../src/status-layout.ts";
+import { buildStatusRows, singleLineStatusText } from "../src/status-layout.ts";
 import type { ChildActivity } from "../src/activity.ts";
 
 function activity(overrides: Partial<ChildActivity> = {}): ChildActivity {
@@ -92,4 +92,16 @@ test("absent usage does not add an empty accounting label", () => {
 
 	assert.equal(rows[0].kind, "header");
 	assert.equal(rows[0].usage, "");
+});
+
+test("legacy activities without model metadata retain the six-row layout", () => {
+	const rows = buildStatusRows([activity({ model: undefined })]);
+
+	assert.equal(rows.length, 6);
+	assert.equal(rows[0].kind, "header");
+	assert.equal(rows[0].model, undefined);
+});
+
+test("status display text collapses multiline and terminal-controlled values", () => {
+	assert.equal(singleLineStatusText("error\n  at child\tframe\x1b[2J"), "error at child frame");
 });

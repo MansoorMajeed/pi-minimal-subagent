@@ -13,7 +13,7 @@ import { createActivity, sanitizeTerminalText, type ChildActivity } from "./acti
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
-import { buildStatusRows, type StatusHeaderRow, type StatusRow } from "./status-layout.ts";
+import { buildStatusRows, singleLineStatusText, type StatusHeaderRow, type StatusRow } from "./status-layout.ts";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TASKS = 8;
@@ -85,12 +85,13 @@ function renderStatusRow(row: StatusRow, theme: any): string {
 	if (row.kind === "header") {
 		const state = row.state.replaceAll("_", " ");
 		const stateColor = row.state === "done" ? "success" : row.state === "running" ? "accent" : row.state === "queued" ? "dim" : "error";
-		const model = row.model ? theme.fg("dim", ` model: ${sanitizeTerminalText(row.model)}`) : "";
+		const model = row.model ? theme.fg("dim", ` model: ${singleLineStatusText(row.model)}`) : "";
 		const usage = row.usage ? theme.fg("dim", ` ${row.usage}`) : "";
-		return `${statusIcon(row, theme)} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(row.agent)))} ${theme.fg(stateColor, state)}${model}${usage}`;
+		return `${statusIcon(row, theme)} ${theme.fg("toolTitle", theme.bold(singleLineStatusText(row.agent)))} ${theme.fg(stateColor, state)}${model}${usage}`;
 	}
 	if (!row.text) return "";
-	const text = row.historical ? `↳ ${sanitizeTerminalText(row.text)}` : sanitizeTerminalText(row.text);
+	const displayText = singleLineStatusText(row.text);
+	const text = row.historical ? `↳ ${displayText}` : displayText;
 	return `  ${theme.fg(row.historical ? "dim" : "muted", text)}`;
 }
 

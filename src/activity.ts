@@ -15,7 +15,7 @@ export interface UsageSummary {
 
 export interface ChildActivity {
 	agent: string;
-	model: string;
+	model?: string;
 	state: ActivityState;
 	current: string;
 	recent: string[];
@@ -101,7 +101,7 @@ function captureModel(activity: ChildActivity, message: any): void {
 	const provider = typeof message.provider === "string" ? message.provider.trim() : "";
 	const model = typeof message.model === "string" ? message.model.trim() : "";
 	if (provider && model) activity.model = `${provider}/${model}`;
-	else if (model && !activity.model.includes("/")) activity.model = model;
+	else if (model && !(activity.model ?? "").includes("/")) activity.model = model;
 }
 
 function messageText(message: any): string {

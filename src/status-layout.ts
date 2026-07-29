@@ -1,9 +1,9 @@
-import { MAX_RECENT_ACTIVITY, type ActivityState, type ChildActivity, type UsageSummary } from "./activity.ts";
+import { MAX_RECENT_ACTIVITY, sanitizeTerminalText, type ActivityState, type ChildActivity, type UsageSummary } from "./activity.ts";
 
 export interface StatusHeaderRow {
 	kind: "header";
 	agent: string;
-	model: string;
+	model?: string;
 	state: ActivityState;
 	usage: string;
 }
@@ -15,6 +15,10 @@ export interface StatusDetailRow {
 }
 
 export type StatusRow = StatusHeaderRow | StatusDetailRow;
+
+export function singleLineStatusText(value: unknown): string {
+	return sanitizeTerminalText(value).replace(/\s+/g, " ").trim();
+}
 
 function formatUsage(usage: UsageSummary): string {
 	const parts: string[] = [];
