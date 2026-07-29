@@ -15,6 +15,7 @@ import {
 	applyActivityEvent,
 	createActivity,
 	JsonLineParser,
+	MAX_RECENT_ACTIVITY,
 	snapshotActivity,
 	type ChildActivity,
 } from "./activity.ts";
@@ -180,7 +181,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let child: ReturnType<typeof spawn> | undefined;
 		const signal = opts.signal;
-		const activity = createActivity(opts.label);
+		const activity = createActivity(opts.label, opts.model);
 		const eventParser = new JsonLineParser();
 		const stdoutDecoder = new StringDecoder("utf8");
 		const maxTurns = Number.isInteger(opts.maxTurns) && (opts.maxTurns ?? 0) > 0 ? opts.maxTurns! : DEFAULT_MAX_TURNS;
@@ -198,7 +199,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				acceptedAnswerAtLimit = lastCompletedAnswer;
 				activity.state = "turn_limit";
 				activity.current = `turn limit reached (${maxTurns})`;
-				activity.recent = [...activity.recent, activity.current].slice(-3);
+				activity.recent = [...activity.recent, activity.current].slice(-MAX_RECENT_ACTIVITY);
 				emitActivity();
 				killTree("SIGTERM");
 				killTimer = setTimeout(() => killTree("SIGKILL"), 3000);
@@ -277,11 +278,11 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				activity.state = aborted ? "aborted" : timedOut ? "timed_out" : turnLimitExceeded ? "turn_limit" : "failed";
 				activity.current = error ?? activity.state;
 				if (activity.recent[activity.recent.length - 1] !== activity.current) activity.recent.push(activity.current);
-				activity.recent = activity.recent.slice(-3);
+				activity.recent = activity.recent.slice(-MAX_RECENT_ACTIVITY);
 			} else if (activity.state !== "done") {
 				activity.state = "done";
 				activity.current = "done";
-				activity.recent = [...activity.recent.filter((item) => item !== "done"), "done"].slice(-3);
+				activity.recent = [...activity.recent.filter((item) => item !== "done"), "done"].slice(-MAX_RECENT_ACTIVITY);
 			}
 			emitActivity();
 			resolve({
@@ -341,7 +342,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			});
 			activity.state = "running";
 			activity.current = "starting";
-			activity.recent = [...activity.recent, "starting"].slice(-3);
+			activity.recent = [...activity.recent, "starting"].slice(-MAX_RECENT_ACTIVITY);
 			emitActivity();
 
 			timer = setTimeout(() => {
