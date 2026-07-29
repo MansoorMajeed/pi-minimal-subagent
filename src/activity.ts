@@ -24,7 +24,7 @@ export interface ChildActivity {
 }
 
 const MAX_ACTIVITY_CHARS = 100;
-const MAX_RECENT = 5;
+export const MAX_RECENT_ACTIVITY = 5;
 const OSC_SEQUENCE = /(?:\u001b\]|\u009d)[\s\S]*?(?:\u0007|\u001b\\|\u009c|$)/g;
 const STRING_CONTROL_SEQUENCE = /(?:\u001b[PX^_]|[\u0090\u0098\u009e\u009f])[\s\S]*?(?:\u001b\\|\u009c|$)/g;
 
@@ -91,7 +91,7 @@ function setCurrent(activity: ChildActivity, text: string, replaceLast = false):
 	}
 	if (activity.recent[activity.recent.length - 1] !== normalized) {
 		activity.recent.push(normalized);
-		if (activity.recent.length > MAX_RECENT) activity.recent.splice(0, activity.recent.length - MAX_RECENT);
+		if (activity.recent.length > MAX_RECENT_ACTIVITY) activity.recent.splice(0, activity.recent.length - MAX_RECENT_ACTIVITY);
 	}
 }
 
@@ -100,7 +100,7 @@ function captureModel(activity: ChildActivity, message: any): void {
 	const provider = typeof message.provider === "string" ? message.provider.trim() : "";
 	const model = typeof message.model === "string" ? message.model.trim() : "";
 	if (provider && model) activity.model = `${provider}/${model}`;
-	else if (model) activity.model = model;
+	else if (model && !activity.model.includes("/")) activity.model = model;
 }
 
 function messageText(message: any): string {
@@ -183,6 +183,7 @@ export function applyActivityEvent(activity: ChildActivity, rawEvent: unknown): 
 			break;
 		case "tool_execution_end":
 			activity.state = "running";
+			activity.streamText = "";
 			setCurrent(activity, event.isError ? `${event.toolName ?? "tool"} failed` : `${event.toolName ?? "tool"} finished`);
 			break;
 		case "message_end":

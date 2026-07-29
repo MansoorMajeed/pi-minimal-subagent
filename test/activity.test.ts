@@ -70,6 +70,11 @@ test("activity shows the configured model then captures the observed provider an
 		message: { role: "assistant", provider: "anthropic", model: "claude-sonnet-4" },
 	});
 	assert.equal(configured.model, "anthropic/claude-sonnet-4");
+	applyActivityEvent(configured, {
+		type: "message_end",
+		message: { role: "assistant", model: "claude-sonnet-4", content: [] },
+	});
+	assert.equal(configured.model, "anthropic/claude-sonnet-4");
 
 	const fallback = createActivity("scout");
 	assert.equal(fallback.model, "default");
@@ -78,6 +83,15 @@ test("activity shows the configured model then captures the observed provider an
 		message: { role: "assistant", provider: "openai", model: "gpt-5", content: [] },
 	});
 	assert.equal(fallback.model, "openai/gpt-5");
+});
+
+test("tool completion ends the current streaming tail entry", () => {
+	const activity = createActivity("worker");
+	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Mapping" } });
+	applyActivityEvent(activity, { type: "tool_execution_end", toolName: "read", isError: false });
+	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Next" } });
+
+	assert.deepEqual(activity.recent, ["queued", "Mapping", "read finished", "Next"]);
 });
 
 test("usage aggregates assistant messages but ignores repeated turn event forms", () => {

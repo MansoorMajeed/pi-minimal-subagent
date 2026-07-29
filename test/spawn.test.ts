@@ -166,6 +166,7 @@ test("turn limit stops before the next turn and retains the last answer", { conc
 		assert.equal(result.turnLimitExceeded, true);
 		assert.equal(result.answer, "answer 2");
 		assert.equal(result.activity.state, "turn_limit");
+		assert.deepEqual(result.activity.recent, ["queued", "starting", "answer 1", "answer 2", "turn limit reached (2)"]);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -187,6 +188,28 @@ test("turn limit does not reject a natural completion on the final turn", { conc
 		assert.equal(result.ok, true);
 		assert.equal(result.turnLimitExceeded, false);
 		assert.equal(result.answer, "final answer");
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("normal completion retains five recent activities", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const emit = (x) => process.stdout.write(JSON.stringify(x) + "\\n");
+		for (const name of ["a", "b", "c", "d", "e", "f"]) {
+			emit({type:"tool_execution_start",toolName:"read",args:{path:name + ".ts"}});
+		}
+		emit({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"final answer"}]}});`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.ok, true);
+		assert.deepEqual(result.activity.recent, ["read d.ts", "read e.ts", "read f.ts", "final answer", "done"]);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
