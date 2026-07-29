@@ -180,7 +180,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let child: ReturnType<typeof spawn> | undefined;
 		const signal = opts.signal;
-		const activity = createActivity(opts.label);
+		const activity = createActivity(opts.label, opts.model);
 		const eventParser = new JsonLineParser();
 		const stdoutDecoder = new StringDecoder("utf8");
 		const maxTurns = Number.isInteger(opts.maxTurns) && (opts.maxTurns ?? 0) > 0 ? opts.maxTurns! : DEFAULT_MAX_TURNS;

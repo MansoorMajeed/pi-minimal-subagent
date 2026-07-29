@@ -85,8 +85,9 @@ function renderStatusRow(row: StatusRow, theme: any): string {
 	if (row.kind === "header") {
 		const state = row.state.replaceAll("_", " ");
 		const stateColor = row.state === "done" ? "success" : row.state === "running" ? "accent" : row.state === "queued" ? "dim" : "error";
+		const model = theme.fg("dim", ` model: ${sanitizeTerminalText(row.model)}`);
 		const usage = row.usage ? theme.fg("dim", ` ${row.usage}`) : "";
-		return `${statusIcon(row, theme)} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(row.agent)))} ${theme.fg(stateColor, state)}${usage}`;
+		return `${statusIcon(row, theme)} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(row.agent)))} ${theme.fg(stateColor, state)}${model}${usage}`;
 	}
 	if (!row.text) return "";
 	const text = row.historical ? `↳ ${sanitizeTerminalText(row.text)}` : sanitizeTerminalText(row.text);
@@ -163,8 +164,9 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const cfg = agents.get(t.agent) as AgentConfig;
 				const label = `${i + 1}-${slug(t.agent)}`;
 				const logPath = path.join(runDir, `${label}.jsonl`);
+				const model = t.model ?? cfg.model;
 				fs.writeFileSync(logPath, "");
-				return { task: t, cfg, label, logPath, activity: createActivity(t.agent) };
+				return { task: t, cfg, label, logPath, model, activity: createActivity(t.agent, model) };
 			});
 
 			let lastUpdateAt = 0;
@@ -193,7 +195,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					task: p.task.task,
 					label: p.task.agent,
 					logPath: p.logPath,
-					model: p.task.model ?? p.cfg.model,
+					model: p.model,
 					thinking: p.cfg.thinking,
 					tools: p.cfg.tools,
 					extensions: p.cfg.extensions,
@@ -242,7 +244,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			if (expanded && !isPartial) {
 				output = result.content?.find((item: any) => item.type === "text")?.text;
 			}
-			return new SubagentStatusComponent(buildStatusRows(details.activities, expanded), output, theme);
+			return new SubagentStatusComponent(buildStatusRows(details.activities), output, theme);
 		},
 	});
 }

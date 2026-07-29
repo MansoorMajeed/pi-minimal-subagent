@@ -15,6 +15,7 @@ export interface UsageSummary {
 
 export interface ChildActivity {
 	agent: string;
+	model: string;
 	state: ActivityState;
 	current: string;
 	recent: string[];
@@ -23,7 +24,7 @@ export interface ChildActivity {
 }
 
 const MAX_ACTIVITY_CHARS = 100;
-const MAX_RECENT = 3;
+const MAX_RECENT = 5;
 const OSC_SEQUENCE = /(?:\u001b\]|\u009d)[\s\S]*?(?:\u0007|\u001b\\|\u009c|$)/g;
 const STRING_CONTROL_SEQUENCE = /(?:\u001b[PX^_]|[\u0090\u0098\u009e\u009f])[\s\S]*?(?:\u001b\\|\u009c|$)/g;
 
@@ -59,9 +60,10 @@ export class JsonLineParser {
 	}
 }
 
-export function createActivity(agent: string): ChildActivity {
+export function createActivity(agent: string, model = "default"): ChildActivity {
 	return {
 		agent,
+		model,
 		state: "queued",
 		current: "queued",
 		recent: ["queued"],
@@ -79,14 +81,26 @@ function oneLine(value: unknown, max = MAX_ACTIVITY_CHARS): string {
 	return `${text.slice(0, max)}…`;
 }
 
-function setCurrent(activity: ChildActivity, text: string): void {
+function setCurrent(activity: ChildActivity, text: string, replaceLast = false): void {
 	const normalized = oneLine(text);
 	if (!normalized) return;
 	activity.current = normalized;
+	if (replaceLast && activity.recent.length > 0) {
+		activity.recent[activity.recent.length - 1] = normalized;
+		return;
+	}
 	if (activity.recent[activity.recent.length - 1] !== normalized) {
 		activity.recent.push(normalized);
 		if (activity.recent.length > MAX_RECENT) activity.recent.splice(0, activity.recent.length - MAX_RECENT);
 	}
+}
+
+function captureModel(activity: ChildActivity, message: any): void {
+	if (message?.role !== "assistant") return;
+	const provider = typeof message.provider === "string" ? message.provider.trim() : "";
+	const model = typeof message.model === "string" ? message.model.trim() : "";
+	if (provider && model) activity.model = `${provider}/${model}`;
+	else if (model) activity.model = model;
 }
 
 function messageText(message: any): string {
@@ -145,12 +159,17 @@ export function applyActivityEvent(activity: ChildActivity, rawEvent: unknown): 
 			activity.streamText = "";
 			setCurrent(activity, "thinking");
 			break;
+		case "message_start":
+			captureModel(activity, event.message);
+			break;
 		case "message_update": {
 			activity.state = "running";
+			captureModel(activity, event.message);
 			const update = event.assistantMessageEvent;
 			if (update?.type === "text_delta" && typeof update.delta === "string") {
+				const continuingStream = !!activity.streamText;
 				activity.streamText = `${activity.streamText ?? ""}${update.delta}`.slice(-300);
-				setCurrent(activity, activity.streamText);
+				setCurrent(activity, activity.streamText, continuingStream);
 			} else if (update?.type === "toolcall_end" && update.toolCall) {
 				activity.streamText = "";
 				setCurrent(activity, toolActivity(update.toolCall.name, update.toolCall.arguments));
@@ -170,6 +189,7 @@ export function applyActivityEvent(activity: ChildActivity, rawEvent: unknown): 
 			if (event.message?.role === "assistant") {
 				activity.state = "running";
 				activity.streamText = "";
+				captureModel(activity, event.message);
 				addUsage(activity, event.message);
 				setCurrent(activity, messageText(event.message) || "responding");
 			}

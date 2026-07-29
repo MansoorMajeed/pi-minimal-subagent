@@ -27,7 +27,13 @@ test("activity reducer keeps compact current and recent child activity", () => {
 
 	assert.equal(activity.state, "done");
 	assert.equal(activity.current, "done");
-	assert.deepEqual(activity.recent, ["read src/index.ts", "Mapped the implementation and found the relevant entry point.", "done"]);
+	assert.deepEqual(activity.recent, [
+		"queued",
+		"started",
+		"read src/index.ts",
+		"Mapped the implementation and found the relevant entry point.",
+		"done",
+	]);
 	assert.deepEqual(activity.usage, {
 		input: 10,
 		output: 4,
@@ -38,6 +44,40 @@ test("activity reducer keeps compact current and recent child activity", () => {
 		cost: 0.01,
 		turns: 1,
 	});
+});
+
+test("activity retains five entries and replaces streaming text in place", () => {
+	const activity = createActivity("scout");
+	applyActivityEvent(activity, { type: "turn_start" });
+	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Map" } });
+	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ping" } });
+
+	assert.equal(activity.current, "Mapping");
+	assert.deepEqual(activity.recent, ["queued", "thinking", "Mapping"]);
+
+	for (const path of ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"]) {
+		applyActivityEvent(activity, { type: "tool_execution_start", toolName: "read", args: { path } });
+	}
+	assert.deepEqual(activity.recent, ["read b.ts", "read c.ts", "read d.ts", "read e.ts", "read f.ts"]);
+});
+
+test("activity shows the configured model then captures the observed provider and model", () => {
+	const configured = createActivity("worker", "anthropic/claude-sonnet-4:high");
+	assert.equal(configured.model, "anthropic/claude-sonnet-4:high");
+
+	applyActivityEvent(configured, {
+		type: "message_start",
+		message: { role: "assistant", provider: "anthropic", model: "claude-sonnet-4" },
+	});
+	assert.equal(configured.model, "anthropic/claude-sonnet-4");
+
+	const fallback = createActivity("scout");
+	assert.equal(fallback.model, "default");
+	applyActivityEvent(fallback, {
+		type: "message_end",
+		message: { role: "assistant", provider: "openai", model: "gpt-5", content: [] },
+	});
+	assert.equal(fallback.model, "openai/gpt-5");
 });
 
 test("usage aggregates assistant messages but ignores repeated turn event forms", () => {
