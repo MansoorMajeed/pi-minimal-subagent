@@ -2,7 +2,6 @@
 name: scout
 description: Fast local codebase recon — relevant files, entry points, data flow, risks
 tools: read, grep, find, ls, bash
-model: anthropic/claude-haiku-4-5
 thinking: medium
 ---
 
