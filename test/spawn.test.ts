@@ -348,6 +348,70 @@ test("failed children return bounded stderr diagnostics", { concurrency: false }
 	}
 });
 
+test("failed children preserve bounded stderr diagnostics alongside partial answers", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const diagnostic = `Provider quota exceeded ${"e".repeat(MAX_INLINE_ERROR_BYTES + 1000)}`;
+	const binDir = fakePi(
+		dir,
+		`const message = {role:"assistant",content:[{type:"text",text:"partial answer"}]};
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]}) + "\\n");
+		process.stderr.write(${JSON.stringify(diagnostic)});
+		process.exitCode = 1;`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.ok, false);
+		assert.equal(result.answer, "partial answer");
+		assert.match(result.error!, /Provider quota exceeded/);
+		assert.match(result.error!, /stderr truncated/);
+		assert.ok(Buffer.byteLength(result.error!, "utf-8") <= MAX_INLINE_ERROR_BYTES);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("failed children without stderr report their exit status", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const message = {role:"assistant",content:[{type:"text",text:"partial answer"}]};
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]}) + "\\n");
+		process.exitCode = 7;`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.error, "exited with status 7");
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("successful children ignore stderr diagnostics", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const message = {role:"assistant",content:[{type:"text",text:"complete answer"}]};
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]}) + "\\n");
+		process.stderr.write("harmless warning");`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.ok, true);
+		assert.equal(result.error, undefined);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("runSubagent returns usage and spills only model-facing large output", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
 	const oldPath = process.env.PATH;

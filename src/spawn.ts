@@ -272,7 +272,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			const ok = !timedOut && !aborted && !turnLimitExceeded && exitCode === 0 && answer.length > 0;
 			const rawError = ok
 				? undefined
-				: (errorOverride ?? (aborted ? "aborted" : timedOut ? "timed out" : turnLimitExceeded ? `turn limit reached (${maxTurns})` : answer ? undefined : stderr.trim() || "no answer produced"));
+				: (errorOverride ?? (aborted ? "aborted" : timedOut ? "timed out" : turnLimitExceeded ? `turn limit reached (${maxTurns})` : stderr.trim() || (exitCode === 0 ? "no answer produced" : exitCode === null ? "process exited without a status" : `exited with status ${exitCode}`)));
 			const error = rawError ? boundedDiagnostic(rawError) : undefined;
 			if (!ok) {
 				activity.state = aborted ? "aborted" : timedOut ? "timed_out" : turnLimitExceeded ? "turn_limit" : "failed";
