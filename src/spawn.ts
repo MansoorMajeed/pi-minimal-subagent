@@ -272,7 +272,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			const ok = !timedOut && !aborted && !turnLimitExceeded && exitCode === 0 && answer.length > 0;
 			const rawError = ok
 				? undefined
-				: (errorOverride ?? (aborted ? "aborted" : timedOut ? "timed out" : turnLimitExceeded ? `turn limit reached (${maxTurns})` : answer ? undefined : stderr.trim() || "no answer produced"));
+				: (errorOverride ?? (aborted ? "aborted" : timedOut ? "timed out" : turnLimitExceeded ? `turn limit reached (${maxTurns})` : stderr.trim() || (exitCode === 0 ? "no answer produced" : exitCode === null ? "process exited without a status" : `exited with status ${exitCode}`)));
 			const error = rawError ? boundedDiagnostic(rawError) : undefined;
 			if (!ok) {
 				activity.state = aborted ? "aborted" : timedOut ? "timed_out" : turnLimitExceeded ? "turn_limit" : "failed";
@@ -306,7 +306,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			if (opts.model) args.push("--model", opts.model);
 			// Apply the agent's thinking level unless the model string already names one.
 			const modelHasLevel = !!opts.model && /:(off|minimal|low|medium|high|xhigh)$/.test(opts.model);
-			if (opts.thinking && opts.thinking !== "off" && !modelHasLevel) args.push("--thinking", opts.thinking);
+			if (opts.thinking && !modelHasLevel) args.push("--thinking", opts.thinking);
 			if (opts.tools?.length) args.push("--tools", opts.tools.join(","));
 			if (opts.extensions !== undefined) {
 				args.push("--no-extensions");

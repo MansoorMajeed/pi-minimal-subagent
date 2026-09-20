@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import { createActivity, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
+import { summarize } from "./result-summary.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
 import { buildStatusRows, singleLineStatusText, type StatusHeaderRow, type StatusRow } from "./status-layout.ts";
 
@@ -52,20 +53,6 @@ async function runPool<T, R>(items: T[], limit: number, fn: (item: T, index: num
 	};
 	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 	return results;
-}
-
-function summarize(results: SubagentResult[]): string {
-	const parts: string[] = [];
-	for (let i = 0; i < results.length; i++) {
-		const r = results[i];
-		const status = r.ok ? "ok" : r.timedOut ? "TIMED OUT" : r.turnLimitExceeded ? "TURN LIMIT" : "FAILED";
-		parts.push(`### [${i + 1}] ${r.agent} — ${status}`);
-		if (r.inlineAnswer) parts.push(r.inlineAnswer);
-		else if (r.error) parts.push(`(no answer: ${r.error})`);
-		parts.push(`\n_log: ${r.logPath}_`);
-		parts.push("");
-	}
-	return parts.join("\n").trim();
 }
 
 interface SubagentDetails {
