@@ -107,6 +107,33 @@ test("forced termination kills same-group descendants that ignore SIGTERM", { co
 	}
 });
 
+test("runSubagent maps thinking settings to exact Pi flags", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const text = JSON.stringify(process.argv.slice(2));
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[{role:"assistant",content:[{type:"text",text}]}]}) + "\\n");`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const explicitOff = JSON.parse((await runSubagent({ ...baseOptions(dir), thinking: "off" })).answer);
+		assert.deepEqual(explicitOff.slice(explicitOff.indexOf("--thinking"), explicitOff.indexOf("--thinking") + 2), ["--thinking", "off"]);
+
+		const omitted = JSON.parse((await runSubagent(baseOptions(dir))).answer);
+		assert.equal(omitted.includes("--thinking"), false);
+
+		const explicitHigh = JSON.parse((await runSubagent({ ...baseOptions(dir), thinking: "high" })).answer);
+		assert.deepEqual(explicitHigh.slice(explicitHigh.indexOf("--thinking"), explicitHigh.indexOf("--thinking") + 2), ["--thinking", "high"]);
+
+		const modelSuffix = JSON.parse((await runSubagent({ ...baseOptions(dir), model: "provider/model:high", thinking: "off" })).answer);
+		assert.equal(modelSuffix.includes("--thinking"), false);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("runSubagent maps extension and project-context controls to exact Pi flags", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
 	const oldPath = process.env.PATH;

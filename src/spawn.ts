@@ -306,7 +306,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			if (opts.model) args.push("--model", opts.model);
 			// Apply the agent's thinking level unless the model string already names one.
 			const modelHasLevel = !!opts.model && /:(off|minimal|low|medium|high|xhigh)$/.test(opts.model);
-			if (opts.thinking && opts.thinking !== "off" && !modelHasLevel) args.push("--thinking", opts.thinking);
+			if (opts.thinking && !modelHasLevel) args.push("--thinking", opts.thinking);
 			if (opts.tools?.length) args.push("--tools", opts.tools.join(","));
 			if (opts.extensions !== undefined) {
 				args.push("--no-extensions");
