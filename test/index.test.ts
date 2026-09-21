@@ -52,18 +52,32 @@ function fakeTheme() {
 
 const CHILD_MARKER = "PI_MINIMAL_SUBAGENT_CHILD";
 
-function registeredTool(): any {
+function registeredRuntime() {
 	let tool: any;
+	const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
+	const commands = new Map<string, any>();
+	const messages: any[] = [];
+	const renderers = new Map<string, any>();
 	const previous = process.env[CHILD_MARKER];
 	delete process.env[CHILD_MARKER];
 	try {
-		minimalSubagentExtension({ registerTool: (definition: any) => { tool = definition; } } as any);
+		minimalSubagentExtension({
+			registerTool: (definition: any) => { tool = definition; },
+			registerCommand: (name: string, definition: any) => commands.set(name, definition),
+			registerMessageRenderer: (name: string, renderer: any) => renderers.set(name, renderer),
+			on: (name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler]),
+			sendMessage: (message: any, options: any) => messages.push({ message, options }),
+		} as any);
 	} finally {
 		if (previous === undefined) delete process.env[CHILD_MARKER];
 		else process.env[CHILD_MARKER] = previous;
 	}
 	assert.ok(tool);
-	return tool;
+	return { tool, handlers, commands, messages, renderers };
+}
+
+function registeredTool(): any {
+	return registeredRuntime().tool;
 }
 
 function fakePi(dir: string, body: string): string {
@@ -221,6 +235,107 @@ test("expanded rendering exposes full tasks while running and preserves complete
 	const completedText = completed.render(100).join("\n");
 	assert.match(completedText, /Task \[1\] worker/);
 	assert.match(completedText, /completed child output/);
+});
+
+test("TUI defaults to background while non-TUI defaults to blocking and rejects explicit async", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-matrix-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"done"}]}; setTimeout(() => process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"), 80);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = (mode: string) => ({ cwd: harnessDir, mode, modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "session-1" }, ui: {} });
+	try {
+		const { tool, handlers } = registeredRuntime();
+		assert.ok(tool.parameters.properties.async);
+		assert.ok(tool.parameters.properties.id);
+		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx("tui"));
+
+		const receipt = await tool.execute("async-call", { tasks: [{ agent: "worker", task: "background" }] }, undefined, undefined, ctx("tui"));
+		assert.match(receipt.content[0].text, /continues in the background/i);
+		assert.ok(receipt.details.jobId);
+		assert.equal(receipt.details.results, undefined);
+
+		const blocking = await tool.execute("blocking-call", { tasks: [{ agent: "worker", task: "blocking" }], async: false }, undefined, undefined, ctx("tui"));
+		assert.match(blocking.content[0].text, /worker — ok/i);
+		const printDefault = await tool.execute("print-call", { tasks: [{ agent: "worker", task: "print" }] }, undefined, undefined, ctx("print"));
+		assert.match(printDefault.content[0].text, /worker — ok/i);
+		await assert.rejects(
+			() => tool.execute("bad-call", { tasks: [{ agent: "worker", task: "bad" }], async: true }, undefined, undefined, ctx("rpc")),
+			/TUI|synchronous/i,
+		);
+		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx("tui"));
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("background status and cancellation require exact IDs and the direct command uses the same job", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-controls-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `setInterval(() => {}, 1000);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const notifications: string[] = [];
+	const ctx = {
+		cwd: harnessDir,
+		mode: "tui",
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "session-controls" },
+		ui: { notify: (text: string) => notifications.push(text), confirm: async () => true },
+	};
+	try {
+		const { tool, handlers, commands } = registeredRuntime();
+		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const one = await tool.execute("one", { tasks: [{ agent: "worker", label: "first goal", task: "first" }] }, undefined, undefined, ctx);
+		const two = await tool.execute("two", { tasks: [{ agent: "worker", task: "second" }] }, undefined, undefined, ctx);
+		const active = await tool.execute("status", { action: "status" }, undefined, undefined, ctx);
+		assert.match(active.content[0].text, new RegExp(one.details.jobId));
+		assert.match(active.content[0].text, new RegExp(two.details.jobId));
+		await assert.rejects(() => tool.execute("bad", { action: "status", id: one.details.jobId.slice(0, 4) }, undefined, undefined, ctx), /Unknown/);
+		await assert.rejects(() => tool.execute("missing", { action: "cancel" }, undefined, undefined, ctx), /requires.*id/i);
+
+		await commands.get("subagent-cancel").handler(one.details.jobId, ctx);
+		assert.match(notifications.at(-1)!, /cancelled/i);
+		const final = await tool.execute("status-one", { action: "status", id: one.details.jobId }, undefined, undefined, ctx);
+		assert.match(final.content[0].text, /aborted|FAILED/i);
+		await tool.execute("cancel-two", { action: "cancel", id: two.details.jobId }, undefined, undefined, ctx);
+		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("session replacement warns without cancelling until committed shutdown", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-lifecycle-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `setInterval(() => {}, 1000);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	let allow = false;
+	const ctx = {
+		cwd: harnessDir,
+		mode: "tui",
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "session-life" },
+		ui: { confirm: async (_title: string, message: string) => { assert.match(message, /file edits are not undone/i); return allow; }, setWidget() {} },
+	};
+	try {
+		const { tool, handlers } = registeredRuntime();
+		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const receipt = await tool.execute("life", { tasks: [{ agent: "worker", task: "long" }] }, undefined, undefined, ctx);
+		const declined = await handlers.get("session_before_switch")?.[0]?.({ reason: "new" }, ctx);
+		assert.deepEqual(declined, { cancel: true });
+		assert.match((await tool.execute("still", { action: "status", id: receipt.details.jobId }, undefined, undefined, ctx)).content[0].text, /running|queued/i);
+		allow = true;
+		assert.equal(await handlers.get("session_before_fork")?.[0]?.({ entryId: "abc" }, ctx), undefined);
+		assert.match((await tool.execute("still2", { action: "status", id: receipt.details.jobId }, undefined, undefined, ctx)).content[0].text, /running|queued/i);
+		await handlers.get("session_shutdown")?.[0]?.({ reason: "new" }, ctx);
+		await handlers.get("session_shutdown")?.[0]?.({ reason: "new" }, ctx);
+		const stopped = await tool.execute("stopped", { action: "status", id: receipt.details.jobId }, undefined, undefined, ctx);
+		assert.match(stopped.content[0].text, /aborted|terminal/i);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("tool wiring preserves labeled task metadata, refreshes the clock, and clears its timer", { concurrency: false }, async () => {

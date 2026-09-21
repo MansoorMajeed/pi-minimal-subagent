@@ -25,6 +25,8 @@ const ToolParams = Type.Object({
 		Type.String({ description: "'list': agents and model guidance. 'models': search available models with query. Omit to run tasks." }),
 	),
 	query: Type.Optional(Type.String({ description: "Required for 'models': name or provider/model ID substring (e.g. 'luna'); at most 50 matches.", minLength: 1 })),
+	async: Type.Optional(Type.Boolean({ description: "TUI only: background execution. Defaults true in TUI and false elsewhere; false always blocks." })),
+	id: Type.Optional(Type.String({ description: "Exact background job ID for status or cancel." })),
 	tasks: Type.Optional(
 		Type.Array(
 			Type.Object({
@@ -44,6 +46,8 @@ function slug(s: string): string {
 
 interface SubagentDetails {
 	runDir: string;
+	jobId?: string;
+	state?: string;
 	activities: ChildActivity[];
 	results?: SubagentResult[];
 }
@@ -91,6 +95,22 @@ export class SubagentStatusComponent implements Component {
 	invalidate(): void {}
 }
 
+function boundedText(text: string): string {
+	const notice = "\nOutput truncated to fit 50KB/2000 lines.";
+	const bounded = truncateHead(text, { maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(notice), maxLines: DEFAULT_MAX_LINES - 1 });
+	return bounded.content + (bounded.truncated ? notice : "");
+}
+
+function jobStatusText(snapshot: ReturnType<JobHandle["snapshot"]>): string {
+	const header = `Job ${snapshot.id} — ${snapshot.state}`;
+	if (snapshot.results) return `${header}\n${summarize(snapshot.results)}`;
+	const lines = snapshot.activities.map((activity, index) => {
+		const progress = activity.reported ?? activity.current;
+		return `[${index + 1}] ${activity.agent} — ${activity.state} — ${activity.goal}${progress ? ` — ${progress}` : ""}`;
+	});
+	return [header, ...lines, `Artifacts: ${snapshot.runDir}`].join("\n");
+}
+
 function expandedTaskText(activities: ChildActivity[], completedOutput?: string): string {
 	const tasks = activities
 		.map((activity, index) => `Task [${index + 1}] ${singleLineStatusText(activity.agent)}\n${sanitizeTerminalText(activity.task)}`)
@@ -101,24 +121,92 @@ function expandedTaskText(activities: ChildActivity[], completedOutput?: string)
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	if (isMinimalSubagentChild()) return;
 
-	const jobs = new JobRegistry();
+	let jobs = new JobRegistry();
+
+	pi.on("session_start", () => {
+		jobs = new JobRegistry();
+	});
+	const confirmReplacement = async (_event: unknown, ctx: any) => {
+		const count = jobs.listActiveBackground().length;
+		if (count === 0 || !ctx.hasUI && ctx.mode !== "tui") return;
+		const confirmed = await ctx.ui.confirm(
+			"Stop background subagents?",
+			`Switching will stop ${count} background job${count === 1 ? "" : "s"}; file edits are not undone. Continue?`,
+		);
+		if (!confirmed) return { cancel: true as const };
+	};
+	pi.on("session_before_switch", confirmReplacement);
+	pi.on("session_before_fork", confirmReplacement);
+	pi.on("session_shutdown", async () => {
+		await jobs.dispose();
+	});
+	pi.registerCommand("subagent-cancel", {
+		description: "Cancel one background subagent job by exact ID",
+		handler: async (args: string, ctx: any) => {
+			const id = args.trim();
+			if (!id) {
+				ctx.ui.notify("Usage: /subagent-cancel <id>", "error");
+				return;
+			}
+			try {
+				await jobs.cancel(id);
+				ctx.ui.notify(`Subagent job ${id} cancelled; file edits are not undone.`, "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
 
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Fan out one or more focused child agents in parallel and get their results back. " +
+			"Fan out one or more focused child agents. In TUI sessions work runs in the background by default; use async:false to block. " +
 			"Each task names an agent and a concrete instruction; multiple tasks run concurrently. " +
 			"Children cannot see the parent conversation, so make every task self-contained. " +
 			"Set a per-task `model` to use a faster/cheaper model for lighter work (e.g. a small model for recon, a stronger one for review). " +
-			"Sequential work = call this tool again with the previous result baked into the next task. " +
-			"Each child streams compact live activity in the tool result. " +
+			"Background completion arrives automatically: continue independent work, or briefly acknowledge and yield without polling. " +
+			"For dependent work, wait for that completion and bake its result into the next self-contained call. Use status/cancel with an exact job ID. " +
+			"Avoid overlapping file writers. Explicit blocking calls stream compact live activity in the tool result. " +
 			"Use { action: 'list' } for agents and model-selection guidance before picking. " +
 			"Resolve model IDs with { action: 'models', query: 'name' }; searches are bounded to 50 matches and 50KB.",
 		parameters: ToolParams,
 
 		async execute(_id, params, signal, onUpdate, ctx) {
+			const allowedActions = new Set(["list", "models", "status", "cancel"]);
+			if (params.action && !allowedActions.has(params.action)) throw new Error(`Unsupported subagent action: ${params.action}`);
+			if (params.action && (params.tasks !== undefined || params.async !== undefined)) {
+				throw new Error(`subagent action '${params.action}' cannot be combined with launch inputs.`);
+			}
+			if (!params.action && (params.id !== undefined || params.query !== undefined)) {
+				throw new Error("subagent launch cannot be combined with control inputs.");
+			}
+			if (params.action === "status") {
+				if (params.query !== undefined) throw new Error("subagent action 'status' does not accept query.");
+				if (params.id) {
+					const snapshot = jobs.get(params.id);
+					if (!snapshot) throw new Error(`Unknown subagent job id: ${params.id}`);
+					return {
+						content: [{ type: "text" as const, text: boundedText(jobStatusText(snapshot)) }],
+						details: { runDir: snapshot.runDir, jobId: snapshot.id, state: snapshot.state, activities: snapshot.activities, results: snapshot.results } satisfies SubagentDetails,
+					};
+				}
+				const active = jobs.listActiveBackground();
+				const text = active.length ? active.map(jobStatusText).join("\n\n") : "No active background subagent jobs.";
+				return { content: [{ type: "text" as const, text: boundedText(text) }] };
+			}
+			if (params.action === "cancel") {
+				if (params.query !== undefined) throw new Error("subagent action 'cancel' does not accept query.");
+				if (!params.id) throw new Error("subagent action 'cancel' requires an exact id.");
+				const results = await jobs.cancel(params.id);
+				const snapshot = jobs.get(params.id)!;
+				return {
+					content: [{ type: "text" as const, text: `Cancelled subagent job ${params.id}; file edits are not undone.\n${summarize(results)}` }],
+					details: { runDir: snapshot.runDir, jobId: snapshot.id, state: snapshot.state, activities: snapshot.activities, results } satisfies SubagentDetails,
+				};
+			}
 			if (params.action === "models") {
+				if (params.id !== undefined) throw new Error("subagent action 'models' does not accept id.");
 				if (!params.query?.trim()) throw new Error("subagent action 'models' requires a nonblank query (e.g. 'luna').");
 				const { matches, total } = searchModels(ctx.modelRegistry.getAvailable(), params.query);
 				const lines = matches.map((model) => `- ${model.provider}/${model.id} — ${model.name}`);
@@ -138,6 +226,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			const agents = discoverAgents(ctx.cwd);
 
 			if (params.action === "list") {
+				if (params.id !== undefined || params.query !== undefined) throw new Error("subagent action 'list' does not accept id or query.");
 				const lines = [...agents.values()]
 					.sort((a, b) => a.name.localeCompare(b.name))
 					.map((a) => `- ${a.name} (${a.source})${a.model ? ` [${a.model}]` : ""} — ${a.description || "no description"}`);
@@ -160,6 +249,11 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					content: [{ type: "text" as const, text: `Unknown agent(s): ${[...new Set(unknown)].join(", ")}.\nAvailable: ${available}` }],
 				};
 			}
+			const background = params.async ?? ctx.mode === "tui";
+			if (params.async === true && ctx.mode !== "tui") {
+				throw new Error("Background subagents require TUI mode; use synchronous execution with async:false or omit async outside the TUI.");
+			}
+			if (background && signal?.aborted) throw new Error("Subagent launch was aborted before background job acceptance.");
 
 			const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 			const runDir = path.join(os.tmpdir(), "pi-minsub", runId);
@@ -186,7 +280,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			const handle: JobHandle = jobs.submit({
 				id: runId,
 				runDir,
-				background: false,
+				background,
 				children: planned.map((p) => ({
 					activity: p.activity,
 					options: {
@@ -207,6 +301,14 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					},
 				})),
 			});
+			if (background) {
+				const snapshot = handle.snapshot();
+				const goals = snapshot.activities.map((activity, index) => `[${index + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
+				return {
+					content: [{ type: "text" as const, text: `Subagent job ${runId} accepted and continues in the background. Completion arrives automatically; do not poll.\n${goals}\nArtifacts: ${runDir}` }],
+					details: { runDir, jobId: runId, state: snapshot.state, activities: snapshot.activities } satisfies SubagentDetails,
+				};
+			}
 			let lastUpdateAt = 0;
 			let updateTimer: ReturnType<typeof setTimeout> | undefined;
 			const update = () => {

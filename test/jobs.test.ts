@@ -133,15 +133,19 @@ test("disposal closes admission, aborts queued work, and waits for active settle
 	const active = registry.submit({ id: "active", runDir: "/tmp/active", background: true, children: [child("a"), child("b")] });
 	await flush();
 	let disposed = false;
+	let duplicateDisposed = false;
 	const disposal = registry.dispose().then(() => { disposed = true; });
+	const duplicateDisposal = registry.dispose().then(() => { duplicateDisposed = true; });
 	await flush();
 	assert.equal(disposed, false);
+	assert.equal(duplicateDisposed, false);
 	assert.throws(
 		() => registry.submit({ id: "late", runDir: "/tmp/late", background: true, children: [child("late")] }),
 		/closed/,
 	);
 	gate.resolve(result(child("a").options, false));
-	await disposal;
+	await Promise.all([disposal, duplicateDisposal]);
 	assert.equal(disposed, true);
+	assert.equal(duplicateDisposed, true);
 	assert.deepEqual((await active.completion).map((item) => item.activity.state), ["failed", "aborted"]);
 });

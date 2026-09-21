@@ -95,6 +95,7 @@ export class JobRegistry {
 	private queue: QueueEntry[] = [];
 	private active = 0;
 	private closed = false;
+	private disposePromise?: Promise<void>;
 
 	constructor(options: JobRegistryOptions = {}) {
 		this.maxConcurrency = options.maxConcurrency ?? 4;
@@ -165,11 +166,14 @@ export class JobRegistry {
 		return job.completion;
 	}
 
-	async dispose(): Promise<void> {
-		if (!this.closed) {
+	dispose(): Promise<void> {
+		if (!this.disposePromise) {
 			this.closed = true;
-			await Promise.all([...this.jobs.values()].filter((job) => !job.terminal).map((job) => this.cancel(job.id)));
+			this.disposePromise = Promise.all(
+				[...this.jobs.values()].filter((job) => !job.terminal).map((job) => this.cancel(job.id)),
+			).then(() => undefined);
 		}
+		return this.disposePromise;
 	}
 
 	private pump(): void {
