@@ -116,7 +116,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						customType: "minimal-subagent-complete",
 						content: `Background subagent job ${id} completed.\nOriginal goals:\n${goals}\n\n${summarize(pending.results)}`,
 						display: true,
-						details: { runDir: pending.runDir, jobId: id, state: snapshot.state, activities: snapshot.activities, results: pending.results } satisfies SubagentDetails,
+						details: { runDir: pending.runDir, jobId: id, state: snapshot.state, activities: pending.results.map((result) => result.activity), results: pending.results } satisfies SubagentDetails,
 					},
 					{ deliverAs: "followUp", triggerTurn: true },
 				);

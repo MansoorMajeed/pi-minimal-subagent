@@ -461,6 +461,7 @@ test("background completion delivers one goal-attributed follow-up while blockin
 		assert.match(messages[0].message.content, /Failure goal/);
 		assert.match(messages[0].message.content, /worker — ok[\s\S]*scout — FAILED/i);
 		assert.deepEqual(messages[0].message.details.results.map((item: any) => item.agent), ["worker", "scout"]);
+		assert.deepEqual(messages[0].message.details.activities.map((item: any) => item.task), ["first", "failure"]);
 		assert.ok(renderers.has("minimal-subagent-complete"));
 
 		await tool.execute("blocking", { tasks: [{ agent: "worker", task: "blocking" }], async: false }, undefined, undefined, ctx);
