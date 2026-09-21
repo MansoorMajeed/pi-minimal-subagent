@@ -338,6 +338,30 @@ test("session replacement warns without cancelling until committed shutdown", { 
 	}
 });
 
+test("session shutdown reaps fake-Pi descendants that ignore graceful termination", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-shutdown-tree-"));
+	const oldPath = process.env.PATH;
+	const pidPath = path.join(dir, "descendant.pid");
+	const descendant = `process.on("SIGTERM",()=>{}); setInterval(()=>{},1000);`;
+	const binDir = fakePi(dir, `const {spawn}=require("node:child_process"); const fs=require("node:fs"); process.on("SIGTERM",()=>{}); const child=spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:"ignore"}); fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid)); setInterval(()=>{},1000);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = { cwd: harnessDir, mode: "tui", modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "tree-session" }, ui: {} };
+	let descendantPid: number | undefined;
+	try {
+		const runtime = registeredRuntime();
+		await runtime.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		await runtime.tool.execute("tree", { tasks: [{ agent: "worker", task: "long tree" }] }, undefined, undefined, ctx);
+		for (let i = 0; i < 50 && !fs.existsSync(pidPath); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		descendantPid = Number(fs.readFileSync(pidPath, "utf8"));
+		await runtime.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+		assert.throws(() => process.kill(descendantPid!, 0), { code: "ESRCH" });
+	} finally {
+		if (descendantPid) try { process.kill(descendantPid, "SIGKILL"); } catch { /* already dead */ }
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("background completion delivers one goal-attributed follow-up while blocking calls and cancellation do not", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-delivery-"));
 	const oldPath = process.env.PATH;
