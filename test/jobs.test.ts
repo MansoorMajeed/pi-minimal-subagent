@@ -127,6 +127,27 @@ test("runner rejection becomes an ordered failure and never strands sibling work
 	assert.equal(registry.activeCount, 0);
 });
 
+test("terminal retention drops blocking records and keeps only background status snapshots", async () => {
+	const registry = new JobRegistry({ runner: async (options) => result(options) });
+	const blocking = registry.submit({ id: "blocking", runDir: "/tmp/blocking", background: false, children: [child("sync")] });
+	await blocking.completion;
+	assert.equal(registry.get("blocking"), undefined);
+	assert.equal((registry as any).jobs.size, 0);
+
+	const background = registry.submit({ id: "background", runDir: "/tmp/background", background: true, children: [child("async")] });
+	await background.completion;
+	const retained = (registry as any).jobs.get("background");
+	assert.equal((registry as any).jobs.size, 1);
+	assert.equal(retained.controller, undefined);
+	assert.equal(retained.resolve, undefined);
+	assert.equal(retained.completion, undefined);
+	assert.deepEqual(retained.children, []);
+	const snapshot = registry.get("background")!;
+	assert.equal(snapshot.activities[0].task, "");
+	assert.equal(snapshot.results![0].activity.task, "");
+	assert.match(snapshot.results![0].answer, /answer async/);
+});
+
 test("disposal closes admission, aborts queued work, and waits for active settlement", async () => {
 	const gate = deferred<SubagentResult>();
 	const registry = new JobRegistry({ maxConcurrency: 1, runner: async () => gate.promise });

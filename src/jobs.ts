@@ -8,7 +8,7 @@ export interface JobChildInput {
 
 interface JobChild {
 	activity: ChildActivity;
-	options: Omit<SubagentRunOptions, "signal" | "onActivity">;
+	options?: Omit<SubagentRunOptions, "signal" | "onActivity">;
 	result?: SubagentResult;
 	running: boolean;
 }
@@ -43,11 +43,12 @@ interface JobRecord {
 	runDir: string;
 	background: boolean;
 	children: JobChild[];
-	controller: AbortController;
+	controller?: AbortController;
 	cancelRequested: boolean;
 	terminal: boolean;
-	resolve: (results: SubagentResult[]) => void;
-	completion: Promise<SubagentResult[]>;
+	resolve?: (results: SubagentResult[]) => void;
+	completion?: Promise<SubagentResult[]>;
+	terminalSnapshot?: JobSnapshot;
 }
 
 interface QueueEntry {
@@ -72,12 +73,12 @@ function terminalActivity(activity: ChildActivity, state: "aborted" | "failed", 
 function syntheticResult(child: JobChild, state: "aborted" | "failed", message: string): SubagentResult {
 	const activity = terminalActivity(child.activity, state, message);
 	return {
-		agent: child.options.label,
+		agent: child.options!.label,
 		ok: false,
 		answer: "",
 		inlineAnswer: "",
 		exitCode: null,
-		logPath: child.options.logPath,
+		logPath: child.options!.logPath,
 		timedOut: false,
 		turnLimitExceeded: false,
 		error: message,
@@ -153,17 +154,19 @@ export class JobRegistry {
 	async cancel(id: string): Promise<SubagentResult[]> {
 		const job = this.jobs.get(id);
 		if (!job) throw new Error(`Unknown subagent job id: ${id}`);
-		if (job.terminal) return job.completion;
+		if (job.terminal) return job.terminalSnapshot!.results!;
+		const completion = job.completion!;
+		const controller = job.controller!;
 		if (!job.cancelRequested) {
 			job.cancelRequested = true;
 			for (const child of job.children) {
 				if (!child.running && !child.result) this.settleChild(job, child, syntheticResult(child, "aborted", "aborted before launch"));
 			}
-			job.controller.abort();
+			controller.abort();
 			this.changed();
 			this.pump();
 		}
-		return job.completion;
+		return completion;
 	}
 
 	dispose(): Promise<void> {
@@ -191,8 +194,8 @@ export class JobRegistry {
 		this.changed();
 		void Promise.resolve()
 			.then(() => this.runner({
-				...child.options,
-				signal: job.controller.signal,
+				...child.options!,
+				signal: job.controller!.signal,
 				onActivity: (activity) => {
 					if (job.terminal) return;
 					child.activity = snapshotActivity(activity);
@@ -213,13 +216,44 @@ export class JobRegistry {
 		child.result = result;
 		child.activity = snapshotActivity(result.activity);
 		if (job.children.every((item) => item.result)) {
+			const results = job.children.map((item) => item.result!);
+			const resolve = job.resolve!;
 			job.terminal = true;
-			job.resolve(job.children.map((item) => item.result!));
+			job.terminalSnapshot = {
+				id: job.id,
+				runDir: job.runDir,
+				background: job.background,
+				state: "terminal",
+				cancelRequested: job.cancelRequested,
+				activities: results.map((item) => ({ ...snapshotActivity(item.activity), task: "" })),
+				results: results.map((item) => ({
+					...item,
+					activity: { ...snapshotActivity(item.activity), task: "" },
+					usage: { ...item.usage },
+				})),
+			};
+			if (!job.background) this.jobs.delete(job.id);
+			job.children = [];
+			job.controller = undefined;
+			job.resolve = undefined;
+			job.completion = undefined;
+			resolve(results);
 		}
 		this.changed();
 	}
 
 	private snapshot(job: JobRecord): JobSnapshot {
+		if (job.terminalSnapshot) {
+			return {
+				...job.terminalSnapshot,
+				activities: job.terminalSnapshot.activities.map(snapshotActivity),
+				results: job.terminalSnapshot.results?.map((item) => ({
+					...item,
+					activity: snapshotActivity(item.activity),
+					usage: { ...item.usage },
+				})),
+			};
+		}
 		const running = job.children.some((child) => child.running);
 		const state: JobState = job.terminal ? "terminal" : job.cancelRequested ? "cancelling" : running ? "running" : "queued";
 		return {
