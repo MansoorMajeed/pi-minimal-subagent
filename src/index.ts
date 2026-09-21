@@ -7,16 +7,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
+import { BackgroundUI } from "./background-ui.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { JobRegistry, type JobHandle } from "./jobs.ts";
 import { loadModelGuide, searchModels } from "./model-guidance.ts";
 import { summarize } from "./result-summary.ts";
 import type { SubagentResult } from "./spawn.ts";
-import { buildStatusRows, singleLineStatusText, type StatusHeaderRow, type StatusRow } from "./status-layout.ts";
+import { expandedTaskText, SubagentStatusComponent } from "./status-render.ts";
+import { buildStatusRows } from "./status-layout.ts";
+
+export { BackgroundUI, SubagentStatusComponent };
 
 const MAX_TASKS = 8;
 
@@ -52,49 +56,6 @@ interface SubagentDetails {
 	results?: SubagentResult[];
 }
 
-function statusIcon(row: StatusHeaderRow, theme: any): string {
-	if (row.state === "done") return theme.fg("success", "✓");
-	if (row.state === "queued") return theme.fg("dim", "○");
-	if (row.state === "running") return theme.fg("accent", "●");
-	return theme.fg("error", "✗");
-}
-
-function renderStatusRow(row: StatusRow, theme: any): string {
-	if (row.kind === "header") {
-		const state = row.state.replaceAll("_", " ");
-		const stateColor = row.state === "done" ? "success" : row.state === "running" ? "accent" : row.state === "queued" ? "dim" : "error";
-		const model = row.model ? theme.fg("dim", ` model: ${singleLineStatusText(row.model)}`) : "";
-		const usage = row.usage ? theme.fg("dim", ` ${row.usage}`) : "";
-		return `${statusIcon(row, theme)} ${theme.fg("toolTitle", theme.bold(singleLineStatusText(row.agent)))} ${theme.fg(stateColor, state)}${model}${usage}`;
-	}
-	if (!row.text) return "";
-	const displayText = singleLineStatusText(row.text);
-	const text = row.historical ? `↳ ${displayText}` : displayText;
-	return `  ${theme.fg(row.historical ? "dim" : "muted", text)}`;
-}
-
-export class SubagentStatusComponent implements Component {
-	private rows: StatusRow[];
-	private output: string | undefined;
-	private theme: any;
-
-	constructor(rows: StatusRow[], output: string | undefined, theme: any) {
-		this.rows = rows;
-		this.output = output;
-		this.theme = theme;
-	}
-
-	render(width: number): string[] {
-		const available = Math.max(1, width);
-		const lines = this.rows.map((row) => truncateToWidth(renderStatusRow(row, this.theme), available, "…"));
-		if (!this.output) return lines;
-		const output = new Text(this.theme.fg("toolOutput", sanitizeTerminalText(this.output)), 0, 0).render(available);
-		return [...lines, "", ...output];
-	}
-
-	invalidate(): void {}
-}
-
 function boundedText(text: string): string {
 	const notice = "\nOutput truncated to fit 50KB/2000 lines.";
 	const bounded = truncateHead(text, { maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(notice), maxLines: DEFAULT_MAX_LINES - 1 });
@@ -111,13 +72,6 @@ function jobStatusText(snapshot: ReturnType<JobHandle["snapshot"]>): string {
 	return [header, ...lines, `Artifacts: ${snapshot.runDir}`].join("\n");
 }
 
-function expandedTaskText(activities: ChildActivity[], completedOutput?: string): string {
-	const tasks = activities
-		.map((activity, index) => `Task [${index + 1}] ${singleLineStatusText(activity.agent)}\n${sanitizeTerminalText(activity.task)}`)
-		.join("\n\n");
-	return completedOutput ? `${tasks}\n\nCompleted output\n${completedOutput}` : tasks;
-}
-
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	if (isMinimalSubagentChild()) return;
 
@@ -127,6 +81,8 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	let sessionId: string | undefined;
 	let completionSubmitted = new Set<string>();
 	let deliveryErrors = new Map<string, string>();
+	let backgroundUI: BackgroundUI | undefined;
+	let unsubscribeBackground: (() => void) | undefined;
 
 	pi.on("session_start", (_event, ctx) => {
 		jobs = new JobRegistry();
@@ -135,6 +91,11 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		sessionId = ctx.sessionManager.getSessionId();
 		completionSubmitted = new Set();
 		deliveryErrors = new Map();
+		if (ctx.mode === "tui" && typeof ctx.ui.setWidget === "function") {
+			backgroundUI = new BackgroundUI(ctx.ui);
+			const ownedJobs = jobs;
+			unsubscribeBackground = jobs.subscribe(() => backgroundUI?.update(ownedJobs.listActiveBackground()));
+		}
 	});
 	const confirmReplacement = async (_event: unknown, ctx: any) => {
 		const count = jobs.listActiveBackground().length;
@@ -149,6 +110,10 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	pi.on("session_before_fork", confirmReplacement);
 	pi.on("session_shutdown", async () => {
 		runtimeAlive = false;
+		unsubscribeBackground?.();
+		unsubscribeBackground = undefined;
+		backgroundUI?.dispose();
+		backgroundUI = undefined;
 		await jobs.dispose();
 	});
 	pi.registerCommand("subagent-cancel", {

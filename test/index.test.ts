@@ -36,7 +36,7 @@ const activityModule = await import(pathToFileURL(path.join(harnessDir, "src", "
 const layoutModule = await import(pathToFileURL(path.join(harnessDir, "src", "status-layout.ts")).href);
 const tuiModule = await import(pathToFileURL(path.join(dependencyRoot, "@earendil-works", "pi-tui", "dist", "index.js")).href);
 const minimalSubagentExtension = indexModule.default;
-const { SubagentStatusComponent } = indexModule;
+const { BackgroundUI, SubagentStatusComponent } = indexModule;
 const { createActivity } = activityModule;
 const { buildStatusRows } = layoutModule;
 const { visibleWidth } = tuiModule;
@@ -402,6 +402,125 @@ test("an accepted background job ignores its tool signal but old-owner shutdown 
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+function widgetJob(id: string, states: Array<"queued" | "running" | "done">) {
+	return {
+		id,
+		runDir: `/tmp/${id}`,
+		background: true,
+		state: states.every((state) => state === "done") ? "terminal" : states.includes("running") ? "running" : "queued",
+		cancelRequested: false,
+		activities: states.map((state, index) => {
+			const activity = createActivity(`worker-${id}-${index}\x1b[2J`, "test/model", { task: `task ${index}`, goal: `goal ${id} ${index}` });
+			activity.state = state;
+			activity.current = state;
+			activity.recent = [state];
+			if (state === "running") {
+				activity.startedAt = Date.now() - 2_000;
+				activity.deadlineAt = Date.now() + 10_000;
+			}
+			return activity;
+		}),
+	};
+}
+
+test("background widget mounts once, repaints in place, bounds cards, and unmounts when empty", { concurrency: false }, () => {
+	const realSetInterval = globalThis.setInterval;
+	const realClearInterval = globalThis.clearInterval;
+	const clocks: Array<{ callback: () => void; cleared: boolean; unref(): void }> = [];
+	(globalThis as any).setInterval = (callback: () => void, delay: number) => {
+		assert.equal(delay, 1_000);
+		const clock = { callback, cleared: false, unref() {} };
+		clocks.push(clock);
+		return clock;
+	};
+	(globalThis as any).clearInterval = (clock: { cleared: boolean }) => { clock.cleared = true; };
+	const widgets: any[] = [];
+	try {
+		const manager = new BackgroundUI({ setWidget: (...args: any[]) => widgets.push(args) });
+		manager.update([widgetJob("job-one", ["running", "running", "running"]), widgetJob("job-two", ["queued"])]);
+		assert.equal(widgets.length, 1);
+		assert.equal(widgets[0][0], "minimal-subagent-background");
+		assert.equal(clocks.length, 1);
+		let renders = 0;
+		const component = widgets[0][1]({ requestRender: () => { renders++; } }, fakeTheme());
+		const lines = component.render(36);
+		assert.equal(lines.length, 13);
+		assert.match(lines[0], /job-one/);
+		assert.match(lines[0], /1 queued/);
+		assert.ok(lines.every((line: string) => visibleWidth(line) <= 36));
+		assert.ok(lines.every((line: string) => !line.includes("\x1b[2J")));
+		manager.update([widgetJob("job-one", ["done", "running"]), widgetJob("job-two", ["queued"])]);
+		assert.equal(widgets.length, 1);
+		assert.ok(renders > 0);
+		const beforeClock = renders;
+		clocks[0].callback();
+		assert.equal(renders, beforeClock + 1);
+		manager.update([]);
+		assert.equal(widgets.length, 2);
+		assert.equal(widgets[1][1], undefined);
+		assert.equal(clocks[0].cleared, true);
+		const afterUnmount = renders;
+		manager.update([widgetJob("late", ["running"])]);
+		manager.dispose();
+		manager.update([widgetJob("ignored", ["running"])]);
+		assert.equal(renders, afterUnmount);
+		assert.equal(clocks[1].cleared, true);
+	} finally {
+		globalThis.setInterval = realSetInterval;
+		globalThis.clearInterval = realClearInterval;
+	}
+});
+
+test("background progress keeps repainting the mounted widget after the receipt without tool updates", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-widget-wire-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const emit=(x)=>process.stdout.write(JSON.stringify(x)+"\\n"); setTimeout(()=>emit({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"Progress: halfway; finishing"}]}}),40); setTimeout(()=>emit({type:"agent_end",messages:[{role:"assistant",content:[{type:"text",text:"done"}]}]}),140);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const widgets: any[] = [];
+	const messages: any[] = [];
+	let toolUpdates = 0;
+	const ctx = {
+		cwd: harnessDir,
+		mode: "tui",
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "widget-session" },
+		ui: { setWidget: (...args: any[]) => widgets.push(args) },
+	};
+	try {
+		const runtime = registeredRuntime();
+		await runtime.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const receipt = await runtime.tool.execute("widget", { tasks: [{ agent: "worker", task: "widget work" }] }, undefined, () => { toolUpdates++; }, ctx);
+		assert.match(receipt.content[0].text, /background/i);
+		assert.equal(widgets.length, 1);
+		let renders = 0;
+		widgets[0][1]({ requestRender: () => { renders++; } }, fakeTheme());
+		await new Promise((resolve) => setTimeout(resolve, 80));
+		assert.ok(renders > 0);
+		assert.equal(widgets.length, 1);
+		assert.equal(toolUpdates, 0);
+		for (let i = 0; i < 30 && runtime.messages.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		messages.push(...runtime.messages);
+		assert.equal(messages.length, 1);
+		assert.equal(widgets.length, 2);
+		assert.equal(widgets[1][1], undefined);
+		await runtime.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("queued widget cards appear only when no child is running and narrow rendering stays bounded", () => {
+	const widgets: any[] = [];
+	const manager = new BackgroundUI({ setWidget: (...args: any[]) => widgets.push(args) });
+	manager.update([widgetJob("queued-a", ["queued", "queued", "queued"])]);
+	const component = widgets[0][1]({ requestRender() {} }, fakeTheme());
+	const lines = component.render(9);
+	assert.equal(lines.length, 13);
+	assert.ok(lines.every((line: string) => visibleWidth(line) <= 9));
+	manager.dispose();
 });
 
 test("tool wiring preserves labeled task metadata, refreshes the clock, and clears its timer", { concurrency: false }, async () => {
