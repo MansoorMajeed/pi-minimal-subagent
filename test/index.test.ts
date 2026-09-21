@@ -49,9 +49,18 @@ function fakeTheme() {
 	};
 }
 
+const CHILD_MARKER = "PI_MINIMAL_SUBAGENT_CHILD";
+
 function registeredTool(): any {
 	let tool: any;
-	minimalSubagentExtension({ registerTool: (definition: any) => { tool = definition; } } as any);
+	const previous = process.env[CHILD_MARKER];
+	delete process.env[CHILD_MARKER];
+	try {
+		minimalSubagentExtension({ registerTool: (definition: any) => { tool = definition; } } as any);
+	} finally {
+		if (previous === undefined) delete process.env[CHILD_MARKER];
+		else process.env[CHILD_MARKER] = previous;
+	}
 	assert.ok(tool);
 	return tool;
 }
@@ -63,6 +72,19 @@ function fakePi(dir: string, body: string): string {
 	fs.writeFileSync(executable, `#!/usr/bin/env node\n${body}`, { mode: 0o755 });
 	return binDir;
 }
+
+test("extension registration remains suppressed inside a minimal subagent child", () => {
+	const previous = process.env[CHILD_MARKER];
+	let registered = false;
+	process.env[CHILD_MARKER] = "1";
+	try {
+		minimalSubagentExtension({ registerTool: () => { registered = true; } } as any);
+	} finally {
+		if (previous === undefined) delete process.env[CHILD_MARKER];
+		else process.env[CHILD_MARKER] = previous;
+	}
+	assert.equal(registered, false);
+});
 
 test("tool schema accepts an optional concise task label", () => {
 	const tool = registeredTool();
