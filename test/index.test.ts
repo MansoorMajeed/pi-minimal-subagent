@@ -476,6 +476,22 @@ test("background completion delivers one goal-attributed follow-up while blockin
 	}
 });
 
+test("collapsed completion renderer distinguishes succeeded, failed, and mixed outcomes", () => {
+	const { renderers } = registeredRuntime();
+	const renderer = renderers.get("minimal-subagent-complete");
+	const theme = { fg: (color: string, text: string) => `[${color}]${text}`, bold: (text: string) => text };
+	const activity = createActivity("worker", "test/model", { task: "task", goal: "goal" });
+	const render = (results: Array<{ ok: boolean }>) => renderer(
+		{ details: { jobId: "job-1", state: "terminal", activities: [activity], results } },
+		{ expanded: false },
+		theme,
+	).render(100).join("\n");
+
+	assert.match(render([{ ok: true }]), /\[success\]✓[\s\S]*\[success\]succeeded/);
+	assert.match(render([{ ok: false }]), /\[error\]✗[\s\S]*\[error\]failed/);
+	assert.match(render([{ ok: true }, { ok: false }]), /\[warning\]![\s\S]*\[warning\]mixed/);
+});
+
 test("busy completions wait for agent settlement and shutdown wins the deferred delivery race", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-pending-delivery-"));
 	const oldPath = process.env.PATH;

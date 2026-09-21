@@ -202,7 +202,15 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		const details = message.details as SubagentDetails | undefined;
 		const id = details?.jobId ?? "unknown";
 		if (!expanded || !details?.activities?.length) {
-			return new Text(`${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold(`subagent ${id}`))} ${theme.fg("dim", details?.state ?? "complete")}`, 0, 0);
+			const results = details?.results ?? [];
+			const succeeded = results.filter((result) => result.ok).length;
+			const outcome = succeeded === results.length ? "succeeded" : succeeded === 0 ? "failed" : "mixed";
+			const presentation = outcome === "succeeded"
+				? { icon: "✓", color: "success" }
+				: outcome === "failed"
+					? { icon: "✗", color: "error" }
+					: { icon: "!", color: "warning" };
+			return new Text(`${theme.fg(presentation.color, presentation.icon)} ${theme.fg("toolTitle", theme.bold(`subagent ${id}`))} ${theme.fg(presentation.color, outcome)}`, 0, 0);
 		}
 		return new SubagentStatusComponent(buildStatusRows(details.activities), summarize(details.results ?? []), theme);
 	});
