@@ -305,6 +305,44 @@ test("background status and cancellation require exact IDs and the direct comman
 	}
 });
 
+test("tool and slash cancellation report when natural completion already won", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-cancel-race-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"done"}]}; process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const notifications: string[] = [];
+	const ctx = {
+		cwd: harnessDir,
+		mode: "tui",
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "cancel-race" },
+		isIdle: () => false,
+		ui: { notify: (text: string) => notifications.push(text), setWidget() {} },
+	};
+	try {
+		const runtime = registeredRuntime();
+		await runtime.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const toolJob = await runtime.tool.execute("tool-race", { tasks: [{ agent: "worker", task: "finish first" }] }, undefined, undefined, ctx);
+		const slashJob = await runtime.tool.execute("slash-race", { tasks: [{ agent: "worker", task: "finish first" }] }, undefined, undefined, ctx);
+		for (let i = 0; i < 50; i++) {
+			const first = await runtime.tool.execute("status", { action: "status", id: toolJob.details.jobId }, undefined, undefined, ctx);
+			const second = await runtime.tool.execute("status", { action: "status", id: slashJob.details.jobId }, undefined, undefined, ctx);
+			if (/terminal/.test(first.content[0].text) && /terminal/.test(second.content[0].text)) break;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		const cancellation = await runtime.tool.execute("cancel", { action: "cancel", id: toolJob.details.jobId }, undefined, undefined, ctx);
+		assert.match(cancellation.content[0].text, /already finished/i);
+		assert.doesNotMatch(cancellation.content[0].text, /^Cancelled/i);
+		await runtime.commands.get("subagent-cancel").handler(slashJob.details.jobId, ctx);
+		assert.match(notifications.at(-1)!, /already finished/i);
+		assert.doesNotMatch(notifications.at(-1)!, /cancelled;/i);
+		await runtime.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("session replacement warns without cancelling until committed shutdown", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-lifecycle-"));
 	const oldPath = process.env.PATH;

@@ -38,6 +38,13 @@ export interface JobHandle {
 	snapshot(): JobSnapshot;
 }
 
+export type CancelDisposition = "cancelled" | "already-cancelling" | "already-terminal";
+
+export interface CancelResult {
+	disposition: CancelDisposition;
+	results: SubagentResult[];
+}
+
 interface JobRecord {
 	id: string;
 	runDir: string;
@@ -151,12 +158,13 @@ export class JobRegistry {
 			.map((job) => this.snapshot(job));
 	}
 
-	async cancel(id: string): Promise<SubagentResult[]> {
+	async cancel(id: string): Promise<CancelResult> {
 		const job = this.jobs.get(id);
 		if (!job) throw new Error(`Unknown subagent job id: ${id}`);
-		if (job.terminal) return job.terminalSnapshot!.results!;
+		if (job.terminal) return { disposition: "already-terminal", results: job.terminalSnapshot!.results! };
 		const completion = job.completion!;
 		const controller = job.controller!;
+		const disposition: CancelDisposition = job.cancelRequested ? "already-cancelling" : "cancelled";
 		if (!job.cancelRequested) {
 			job.cancelRequested = true;
 			for (const child of job.children) {
@@ -166,7 +174,7 @@ export class JobRegistry {
 			this.changed();
 			this.pump();
 		}
-		return completion;
+		return { disposition, results: await completion };
 	}
 
 	dispose(): Promise<void> {

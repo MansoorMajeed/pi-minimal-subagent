@@ -94,9 +94,10 @@ test("queued cancellation settles without spawning and running cancellation hold
 	const running = registry.submit({ id: "running", runDir: "/tmp/running", background: true, children: [child("a")] });
 	const queued = registry.submit({ id: "queued", runDir: "/tmp/queued", background: true, children: [child("b"), child("c")] });
 	await flush();
-	const queuedResults = await registry.cancel("queued");
+	const queuedCancellation = await registry.cancel("queued");
+	assert.equal(queuedCancellation.disposition, "cancelled");
 	assert.deepEqual(started, ["a"]);
-	assert.deepEqual(queuedResults.map((item) => item.activity.state), ["aborted", "aborted"]);
+	assert.deepEqual(queuedCancellation.results.map((item) => item.activity.state), ["aborted", "aborted"]);
 
 	let cancelled = false;
 	const cancellation = registry.cancel("running").then(() => { cancelled = true; });
@@ -107,7 +108,31 @@ test("queued cancellation settles without spawning and running cancellation hold
 	await cancellation;
 	assert.equal(registry.activeCount, 0);
 	assert.deepEqual((await running.completion).map((item) => item.agent), ["a"]);
-	await registry.cancel("running");
+	assert.equal((await registry.cancel("running")).disposition, "already-terminal");
+});
+
+test("cancellation disposition reflects natural-completion and simultaneous races", async () => {
+	const gates = new Map<string, ReturnType<typeof deferred<SubagentResult>>>();
+	const registry = new JobRegistry({ runner: async (options) => {
+		const gate = deferred<SubagentResult>();
+		gates.set(options.label, gate);
+		return gate.promise;
+	} });
+
+	registry.submit({ id: "natural", runDir: "/tmp/natural", background: true, children: [child("natural")] });
+	await flush();
+	gates.get("natural")!.resolve(result(child("natural").options));
+	await flush();
+	const after = await registry.cancel("natural");
+	assert.equal(after.disposition, "already-terminal");
+	assert.equal(after.results[0].ok, true);
+
+	registry.submit({ id: "simultaneous", runDir: "/tmp/simultaneous", background: true, children: [child("simultaneous")] });
+	await flush();
+	gates.get("simultaneous")!.resolve(result(child("simultaneous").options));
+	const racing = await registry.cancel("simultaneous");
+	assert.equal(racing.disposition, "cancelled");
+	assert.equal(racing.results[0].ok, true);
 });
 
 test("runner rejection becomes an ordered failure and never strands sibling work", async () => {

@@ -185,8 +185,13 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				return;
 			}
 			try {
-				await jobs.cancel(id);
-				ctx.ui.notify(`Subagent job ${id} cancelled; file edits are not undone.`, "info");
+				const { disposition } = await jobs.cancel(id);
+				const message = disposition === "cancelled"
+					? `Subagent job ${id} cancelled; file edits are not undone.`
+					: disposition === "already-cancelling"
+						? `Subagent job ${id} was already being cancelled; file edits are not undone.`
+						: `Subagent job ${id} already finished; no cancellation occurred.`;
+				ctx.ui.notify(message, "info");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
@@ -244,10 +249,15 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			if (params.action === "cancel") {
 				if (params.query !== undefined) throw new Error("subagent action 'cancel' does not accept query.");
 				if (!params.id) throw new Error("subagent action 'cancel' requires an exact id.");
-				const results = await jobs.cancel(params.id);
+				const { disposition, results } = await jobs.cancel(params.id);
 				const snapshot = jobs.get(params.id)!;
+				const message = disposition === "cancelled"
+					? `Cancelled subagent job ${params.id}; file edits are not undone.`
+					: disposition === "already-cancelling"
+						? `Subagent job ${params.id} was already being cancelled; file edits are not undone.`
+						: `Subagent job ${params.id} already finished; no cancellation occurred.`;
 				return {
-					content: [{ type: "text" as const, text: `Cancelled subagent job ${params.id}; file edits are not undone.\n${summarize(results)}` }],
+					content: [{ type: "text" as const, text: `${message}\n${summarize(results)}` }],
 					details: { runDir: snapshot.runDir, jobId: snapshot.id, state: snapshot.state, activities: snapshot.activities, results } satisfies SubagentDetails,
 				};
 			}
