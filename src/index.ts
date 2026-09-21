@@ -6,7 +6,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
@@ -138,10 +138,13 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const text = total
 					? `Available model matches (registry, not a live quota/access check):\n${lines.join("\n")}`
 					: "No available models match this query.";
-				const bounded = truncateHead(text);
-				const notice = bounded.truncated
-					? "\nOutput truncated at 50KB/2000 lines. Narrow your query."
-					: total > matches.length ? `\nShowing ${matches.length} of ${total} matches. Narrow your query.` : "";
+				const truncationNotice = "\nOutput truncated to fit 50KB/2000 lines. Narrow your query.";
+				const matchNotice = total > matches.length ? `\nShowing ${matches.length} of ${total} matches. Narrow your query.` : "";
+				const bounded = truncateHead(text, {
+					maxBytes: DEFAULT_MAX_BYTES - Math.max(Buffer.byteLength(truncationNotice), Buffer.byteLength(matchNotice)),
+					maxLines: DEFAULT_MAX_LINES - 1,
+				});
+				const notice = bounded.truncated ? truncationNotice : matchNotice;
 				return { content: [{ type: "text" as const, text: bounded.content + notice }] };
 			}
 

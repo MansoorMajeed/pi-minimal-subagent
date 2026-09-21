@@ -169,10 +169,13 @@ test("models action bounds broad searches and tells the parent to narrow them", 
 	assert.match(text, /[Nn]arrow/);
 	assert.doesNotMatch(text, /luna-0050/);
 
-	ctx.modelRegistry.getAvailable = () => [{ provider: "local", id: "luna", name: "🙂".repeat(20_000) }];
-	const oversized = await tool.execute("models", { action: "models", query: "luna" }, undefined, undefined, ctx);
-	assert.ok(Buffer.byteLength(oversized.content[0].text) < 52_000);
-	assert.match(oversized.content[0].text, /[Nn]arrow/);
+	for (const name of ["🙂".repeat(20_000), "x".repeat(51_100) + "\n" + "x".repeat(1_000), "x\n".repeat(2_200)]) {
+		ctx.modelRegistry.getAvailable = () => [{ provider: "local", id: "luna", name }];
+		const oversized = await tool.execute("models", { action: "models", query: "luna" }, undefined, undefined, ctx);
+		assert.ok(Buffer.byteLength(oversized.content[0].text) <= 50 * 1024);
+		assert.ok(oversized.content[0].text.split("\n").length <= 2_000);
+		assert.match(oversized.content[0].text, /[Nn]arrow/);
+	}
 });
 
 test("status component keeps six sanitized width-bounded rows", () => {
