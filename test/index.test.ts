@@ -305,6 +305,44 @@ test("background status and cancellation require exact IDs and the direct comman
 	}
 });
 
+test("exact-ID status includes queued, running, and frozen terminal timing", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-status-timing-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `setInterval(() => {}, 1000);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = {
+		cwd: harnessDir,
+		mode: "tui",
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "status-timing" },
+		isIdle: () => false,
+		ui: { setWidget() {} },
+	};
+	let runtime: ReturnType<typeof registeredRuntime> | undefined;
+	try {
+		runtime = registeredRuntime();
+		await runtime.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const receipt = await runtime.tool.execute("timing", { tasks: Array.from({ length: 5 }, (_, index) => ({ agent: "worker", task: `long ${index}` })) }, undefined, undefined, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		const active = await runtime.tool.execute("active", { action: "status", id: receipt.details.jobId }, undefined, undefined, ctx);
+		assert.match(active.content[0].text, /Elapsed \d+s · timeout in/);
+		assert.match(active.content[0].text, / — Queued(?:\n|$)/);
+		await runtime.tool.execute("cancel", { action: "cancel", id: receipt.details.jobId }, undefined, undefined, ctx);
+		const first = await runtime.tool.execute("terminal-1", { action: "status", id: receipt.details.jobId }, undefined, undefined, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const second = await runtime.tool.execute("terminal-2", { action: "status", id: receipt.details.jobId }, undefined, undefined, ctx);
+		const timing = (text: string) => text.split("\n").filter((line) => /Elapsed|Not started/.test(line));
+		assert.ok(timing(first.content[0].text).length > 0);
+		assert.deepEqual(timing(second.content[0].text), timing(first.content[0].text));
+		await runtime.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+		runtime = undefined;
+	} finally {
+		await runtime?.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("tool and slash cancellation report when natural completion already won", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-cancel-race-"));
 	const oldPath = process.env.PATH;

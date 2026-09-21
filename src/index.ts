@@ -18,7 +18,7 @@ import { loadModelGuide, searchModels } from "./model-guidance.ts";
 import { summarize } from "./result-summary.ts";
 import type { SubagentResult } from "./spawn.ts";
 import { expandedTaskText, SubagentStatusComponent } from "./status-render.ts";
-import { buildStatusRows } from "./status-layout.ts";
+import { activityTimingText, buildStatusRows } from "./status-layout.ts";
 
 export { BackgroundUI, SubagentStatusComponent };
 
@@ -64,12 +64,13 @@ function boundedText(text: string): string {
 
 function jobStatusText(snapshot: ReturnType<JobHandle["snapshot"]>): string {
 	const header = `Job ${snapshot.id} — ${snapshot.state}`;
-	if (snapshot.results) return `${header}\n${summarize(snapshot.results)}`;
+	const now = Date.now();
 	const lines = snapshot.activities.map((activity, index) => {
 		const progress = activity.reported ?? activity.current;
-		return `[${index + 1}] ${activity.agent} — ${activity.state} — ${activity.goal}${progress ? ` — ${progress}` : ""}`;
+		return `[${index + 1}] ${activity.agent} — ${activity.state} — ${activity.goal}${progress ? ` — ${progress}` : ""} — ${activityTimingText(activity, now)}`;
 	});
-	return [header, ...lines, `Artifacts: ${snapshot.runDir}`].join("\n");
+	const status = [header, ...lines, `Artifacts: ${snapshot.runDir}`].join("\n");
+	return snapshot.results ? `${status}\n\n${summarize(snapshot.results)}` : status;
 }
 
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
