@@ -24,6 +24,7 @@ const harnessDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-extension-ha
 const sourceDir = path.resolve(new URL("../src", import.meta.url).pathname);
 fs.cpSync(sourceDir, path.join(harnessDir, "src"), { recursive: true });
 fs.cpSync(path.resolve(new URL("../agents", import.meta.url).pathname), path.join(harnessDir, "agents"), { recursive: true });
+fs.copyFileSync(new URL("../SUBAGENT_MODELS.md", import.meta.url), path.join(harnessDir, "SUBAGENT_MODELS.md"));
 const piRoot = findPackageRoot(path.dirname(fs.realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim())));
 const dependencyRoot = path.join(piRoot, "node_modules");
 fs.mkdirSync(path.join(harnessDir, "node_modules", "@earendil-works"), { recursive: true });
@@ -91,6 +92,90 @@ test("tool schema accepts an optional concise task label", () => {
 	const taskProperties = tool.parameters.properties.tasks.items.properties;
 	assert.ok(taskProperties.label);
 	assert.equal(taskProperties.label.description, "Concise display goal (e.g. 'Implement refresh-token rotation')");
+});
+
+test("agent discovery includes the active guide without changing the tool description", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-guide-wiring-"));
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = dir;
+	try {
+		const tool = registeredTool();
+		assert.doesNotMatch(tool.description, /gpt-5\.6-luna|gpt-6-astra/);
+		const discover = () => tool.execute("list", { action: "list" }, undefined, undefined, { cwd: dir });
+		const bundled = (await discover()).content[0].text;
+		assert.match(bundled, /Available agents:/);
+		assert.match(bundled, /worker/);
+		assert.match(bundled, /gpt-5\.6-luna/);
+		assert.ok(bundled.includes(path.join(harnessDir, "SUBAGENT_MODELS.md")));
+
+		const override = path.join(dir, "SUBAGENT_MODELS.md");
+		fs.writeFileSync(override, "Prefer my local model only.");
+		const custom = (await discover()).content[0].text;
+		assert.match(custom, /Prefer my local model only/);
+		assert.ok(custom.includes(override));
+		assert.doesNotMatch(custom, /gpt-5\.6-luna|openai-codex/);
+
+		fs.writeFileSync(override, "");
+		assert.doesNotMatch((await discover()).content[0].text, /gpt-5\.6-luna/);
+		fs.writeFileSync(override, "x".repeat(60_000));
+		await assert.rejects(discover(), /too large/i);
+	} finally {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("models action searches the available registry and retains provider alternatives", async () => {
+	const tool = registeredTool();
+	assert.ok(tool.parameters.properties.query);
+	let reads = 0;
+	const ctx = { modelRegistry: { getAvailable() {
+		reads++;
+		return [
+			{ provider: "openrouter", id: "openai/luna", name: "Luna", headers: { secret: "do-not-expose" } },
+			{ provider: "openai-codex", id: "gpt-luna", name: "Luna" },
+			{ provider: "local", id: "other", name: "Other" },
+		];
+	} } };
+	const result = await tool.execute("models", { action: "models", query: "LUNA" }, undefined, undefined, ctx);
+	assert.equal(reads, 1);
+	assert.match(result.content[0].text, /openai-codex\/gpt-luna/);
+	assert.match(result.content[0].text, /openrouter\/openai\/luna/);
+	assert.doesNotMatch(JSON.stringify(result), /do-not-expose|local\/other/);
+	const absent = await tool.execute("models", { action: "models", query: "missing" }, undefined, undefined, ctx);
+	assert.match(absent.content[0].text, /No available models match/);
+});
+
+test("models action requires a search term instead of dumping the catalogue", async () => {
+	const tool = registeredTool();
+	for (const query of [undefined, "", "   "]) {
+		await assert.rejects(
+			() => tool.execute("models", { action: "models", query }, undefined, undefined, {}),
+			/nonblank query/,
+		);
+	}
+});
+
+test("models action bounds broad searches and tells the parent to narrow them", async () => {
+	const tool = registeredTool();
+	const ctx = { modelRegistry: { getAvailable: () => Array.from({ length: 2_000 }, (_, index) => ({
+		provider: "local", id: `luna-${String(index).padStart(4, "0")}`, name: "Luna",
+	})) } };
+	const result = await tool.execute("models", { action: "models", query: "luna" }, undefined, undefined, ctx);
+	const text = result.content[0].text;
+	assert.equal(text.split("\n").filter((line: string) => line.startsWith("- ")).length, 50);
+	assert.match(text, /50 of 2000/);
+	assert.match(text, /[Nn]arrow/);
+	assert.doesNotMatch(text, /luna-0050/);
+
+	for (const name of ["🙂".repeat(20_000), "x".repeat(51_100) + "\n" + "x".repeat(1_000), "x\n".repeat(2_200)]) {
+		ctx.modelRegistry.getAvailable = () => [{ provider: "local", id: "luna", name }];
+		const oversized = await tool.execute("models", { action: "models", query: "luna" }, undefined, undefined, ctx);
+		assert.ok(Buffer.byteLength(oversized.content[0].text) <= 50 * 1024);
+		assert.ok(oversized.content[0].text.split("\n").length <= 2_000);
+		assert.match(oversized.content[0].text, /[Nn]arrow/);
+	}
 });
 
 test("status component keeps six sanitized width-bounded rows", () => {
