@@ -26,6 +26,10 @@ export function searchModels(models: readonly ModelEntry[], query: string): { ma
 	if (!term) throw new Error("subagent action 'models' requires a nonblank query (e.g. 'luna').");
 	const matches = models
 		.filter((model) => `${model.provider}/${model.id}`.toLowerCase().includes(term) || model.name.toLowerCase().includes(term))
-		.sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
+		.sort((a, b) => {
+			const left = `${a.provider}/${a.id}`;
+			const right = `${b.provider}/${b.id}`;
+			return left < right ? -1 : left > right ? 1 : 0;
+		});
 	return { matches: matches.slice(0, MAX_MODEL_MATCHES), total: matches.length };
 }

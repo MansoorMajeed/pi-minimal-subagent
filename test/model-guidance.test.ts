@@ -61,6 +61,18 @@ test("model search matches names and exact provider/id substrings case-insensiti
 	assert.deepEqual(models[0], { provider: "openrouter", id: "openai/gpt-5.6-luna", name: "Luna via router" });
 });
 
+test("the fifty-match cutoff uses locale-independent provider/id ordering", () => {
+	const catalogue = [
+		{ provider: "p", id: "ä", name: "match" },
+		...Array.from({ length: 50 }, (_, index) => ({ provider: "p", id: `z${String(index).padStart(2, "0")}`, name: "match" })),
+	];
+	const result = searchModels(catalogue, "match");
+	assert.equal(result.total, 51);
+	assert.equal(result.matches.length, 50);
+	assert.equal(result.matches[0].id, "z00");
+	assert.equal(result.matches[49].id, "z49");
+});
+
 test("model search requires a nonblank literal query and reports no matches", () => {
 	for (const query of ["", "   "]) assert.throws(() => searchModels(models, query), /nonblank query/);
 	assert.deepEqual(searchModels(models, ".*"), { matches: [], total: 0 });
