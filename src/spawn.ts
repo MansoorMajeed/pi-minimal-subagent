@@ -19,7 +19,6 @@ import {
 	snapshotActivity,
 	type ChildActivity,
 } from "./activity.ts";
-import { DEFAULT_MAX_TURNS } from "./agent-options.ts";
 import { MINIMAL_SUBAGENT_CHILD_ENV } from "./child-boundary.ts";
 
 export const MAX_INLINE_ANSWER_BYTES = 16 * 1024;
@@ -184,7 +183,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		const activity = createActivity(opts.label, opts.model);
 		const eventParser = new JsonLineParser();
 		const stdoutDecoder = new StringDecoder("utf8");
-		const maxTurns = Number.isInteger(opts.maxTurns) && (opts.maxTurns ?? 0) > 0 ? opts.maxTurns! : DEFAULT_MAX_TURNS;
+		const maxTurns = Number.isInteger(opts.maxTurns) && (opts.maxTurns ?? 0) > 0 ? opts.maxTurns : undefined;
 
 		const emitActivity = () => opts.onActivity?.(snapshotActivity(activity));
 		const processEvent = (event: unknown) => {
@@ -193,6 +192,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				event &&
 				typeof event === "object" &&
 				(event as { type?: unknown }).type === "turn_start" &&
+				maxTurns !== undefined &&
 				activity.usage.turns >= maxTurns
 			) {
 				turnLimitExceeded = true;
@@ -319,7 +319,11 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				fs.writeFileSync(promptFile, opts.systemPrompt, { mode: 0o600 });
 				args.push(opts.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptFile);
 			}
-			args.push(`Task: ${opts.task}`);
+			const deadline = new Date(Date.now() + opts.timeoutMs).toISOString();
+			const turnGuidance = maxTurns === undefined ? "" : `\n- Turn cap: ${maxTurns} completed assistant turns.`;
+			args.push(
+				`Task: ${opts.task}\n\nRuntime limits:\n- Hard timeout: ${opts.timeoutMs} ms. Absolute UTC deadline: ${deadline}.${turnGuidance}\n- If possible before the deadline, leave a concise handoff of completed work, verification, and remaining work.`,
+			);
 
 			fs.mkdirSync(path.dirname(opts.logPath), { recursive: true });
 			logStream = fs.createWriteStream(opts.logPath, { flags: "w" });

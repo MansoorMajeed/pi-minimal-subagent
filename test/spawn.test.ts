@@ -174,6 +174,68 @@ test("runSubagent maps extension and project-context controls to exact Pi flags"
 	}
 });
 
+test("omitting maxTurns allows more than 50 assistant turns to finish naturally", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const emit = (x) => process.stdout.write(JSON.stringify(x) + "\\n");
+		for (let i = 1; i <= 51; i++) {
+			emit({type:"turn_start",turnIndex:i - 1});
+			emit({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"answer " + i}]}});
+		}
+		emit({type:"agent_end",messages:[{role:"assistant",content:[{type:"text",text:"answer 51"}]}]});`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.ok, true);
+		assert.equal(result.turnLimitExceeded, false);
+		assert.equal(result.answer, "answer 51");
+		assert.equal(result.usage.turns, 51);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("launch guidance preserves the task and describes timeout and optional turn cap", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const fs = require("node:fs");
+		const args = process.argv.slice(2);
+		const promptFlag = args.indexOf("--system-prompt");
+		const text = JSON.stringify({args, prompt: promptFlag >= 0 ? fs.readFileSync(args[promptFlag + 1], "utf8") : null});
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[{role:"assistant",content:[{type:"text",text}]}]}) + "\\n");`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const uncapped = JSON.parse((await runSubagent({ ...baseOptions(dir), task: "keep this exact task" })).answer);
+		const uncappedTask = uncapped.args.at(-1);
+		assert.match(uncappedTask, /^Task: keep this exact task\n\nRuntime limits:/);
+		assert.match(uncappedTask, /5000 ms/);
+		assert.match(uncappedTask, /Absolute UTC deadline: \d{4}-\d{2}-\d{2}T/);
+		assert.doesNotMatch(uncappedTask, /turn cap/i);
+		assert.equal(uncapped.args.includes("--system-prompt"), false);
+
+		const capped = JSON.parse((await runSubagent({
+			...baseOptions(dir),
+			task: "replace-mode task",
+			maxTurns: 12,
+			systemPrompt: "Replacement prompt",
+			systemPromptMode: "replace",
+		})).answer);
+		assert.equal(capped.prompt, "Replacement prompt");
+		assert.match(capped.args.at(-1), /^Task: replace-mode task\n\nRuntime limits:/);
+		assert.match(capped.args.at(-1), /Turn cap: 12 completed assistant turns/);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("turn limit stops before the next turn and retains the last answer", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
 	const oldPath = process.env.PATH;

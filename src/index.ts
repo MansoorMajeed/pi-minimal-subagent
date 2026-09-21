@@ -16,7 +16,6 @@ import { summarize } from "./result-summary.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
 import { buildStatusRows, singleLineStatusText, type StatusHeaderRow, type StatusRow } from "./status-layout.ts";
 
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 
@@ -192,7 +191,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					systemPrompt: p.cfg.systemPrompt,
 					systemPromptMode: p.cfg.systemPromptMode,
 					cwd: ctx.cwd,
-					timeoutMs: DEFAULT_TIMEOUT_MS,
+					timeoutMs: p.cfg.timeoutMs,
 					signal,
 					onActivity: (activity) => {
 						p.activity = activity;
