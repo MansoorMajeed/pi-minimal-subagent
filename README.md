@@ -39,7 +39,8 @@ subagent({
 ```
 
 Up to 8 tasks run with concurrency 4. Use
-`subagent({ action: "list" })` to enumerate bundled and custom agents.
+`subagent({ action: "list" })` to enumerate bundled and custom agents and read
+model-selection guidance.
 
 | Task field | Behavior |
 |---|---|
@@ -93,8 +94,57 @@ Model precedence is:
 2. `model:` in the agent's frontmatter.
 3. Pi's configured default model.
 
-Use cheaper/faster models for recon and stronger models for difficult review or
-implementation. List available models with `pi --list-models`.
+### Selection guidance
+
+`subagent({ action: "list" })` includes the bundled
+[`SUBAGENT_MODELS.md`](SUBAGENT_MODELS.md): opinionated Luna/Sol/Astra recommendations
+and a preference for `openai-codex` subscription access over separately billed
+providers. These are author preferences, not universal rankings, automatic routing,
+or enforced billing protection. Explicit user choices take precedence.
+
+Create `~/.pi/agent/SUBAGENT_MODELS.md` to **replace the entire guide** with your own
+model and provider preferences. If you use `PI_CODING_AGENT_DIR`, place the file in
+that directory instead. For example:
+
+```markdown
+# My subagent models
+
+Prefer my local Qwen model for bounded scouting and mechanical changes.
+Ask me before selecting a separately billed provider.
+Search available models before choosing an exact provider/model ID.
+```
+
+The file is read on every `action: "list"` call; no restart is needed. An empty
+file removes model guidance, and deleting the file restores bundled defaults.
+Unreadable files report an error rather than silently restoring another policy.
+There is no project override or merging. The response identifies the active file;
+guidance is returned on discovery, not injected into every system prompt. Keep it
+short: discovery exceeding 50KB or 2000 lines is rejected rather than returning
+an incomplete policy.
+
+### Find actual model IDs
+
+```ts
+subagent({ action: "models", query: "luna" })
+subagent({ action: "models", query: "openai-codex/gpt-5.6-sol" })
+```
+
+A nonblank query is required. Searches filter Pi's available registry locally by
+case-insensitive literal substring of the model name or `provider/model-id`.
+They return exact IDs and names, sorted by provider/ID, with **at most 50 matches**
+and a 50KB/2000-line output bound. Broad searches tell the parent to narrow the
+query; the full catalogue is never dumped automatically. Multiple providers
+remain visible so the parent can apply the guide's preferences.
+
+Registry availability means configured authentication, not verified quota, billing,
+or a successful live request. Search does not call a model, refresh remote
+catalogues, expose credentials, or filter to the parent's model-cycling scope.
+Children are separate Pi processes: a model registered only in the parent may
+not exist in a child's differently configured environment.
+
+Pass the chosen exact ID through the existing task `model` field. A supported
+thinking suffix (e.g. `openai-codex/gpt-5.6-luna:xhigh`) overrides agent thinking.
+Discovery never changes model precedence or silently substitutes another model.
 
 ## Agents
 

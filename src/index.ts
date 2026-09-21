@@ -6,12 +6,13 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
+import { loadModelGuide, searchModels } from "./model-guidance.ts";
 import { summarize } from "./result-summary.ts";
 import { runSubagent, type SubagentResult } from "./spawn.ts";
 import { buildStatusRows, singleLineStatusText, type StatusHeaderRow, type StatusRow } from "./status-layout.ts";
@@ -21,8 +22,9 @@ const MAX_CONCURRENCY = 4;
 
 const ToolParams = Type.Object({
 	action: Type.Optional(
-		Type.String({ description: "Set to 'list' to enumerate available agents (name, description, source) instead of running tasks." }),
+		Type.String({ description: "'list': agents and model guidance. 'models': search available models with query. Omit to run tasks." }),
 	),
+	query: Type.Optional(Type.String({ description: "Required for 'models': name or provider/model ID substring (e.g. 'luna'); at most 50 matches.", minLength: 1 })),
 	tasks: Type.Optional(
 		Type.Array(
 			Type.Object({
@@ -124,17 +126,35 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			"Set a per-task `model` to use a faster/cheaper model for lighter work (e.g. a small model for recon, a stronger one for review). " +
 			"Sequential work = call this tool again with the previous result baked into the next task. " +
 			"Each child streams compact live activity in the tool result. " +
-			"Use { action: 'list' } to see available agents (incl. custom ones) before picking.",
+			"Use { action: 'list' } for agents and model-selection guidance before picking. " +
+			"Resolve model IDs with { action: 'models', query: 'name' }; searches are bounded to 50 matches and 50KB.",
 		parameters: ToolParams,
 
 		async execute(_id, params, signal, onUpdate, ctx) {
+			if (params.action === "models") {
+				if (!params.query?.trim()) throw new Error("subagent action 'models' requires a nonblank query (e.g. 'luna').");
+				const { matches, total } = searchModels(ctx.modelRegistry.getAvailable(), params.query);
+				const lines = matches.map((model) => `- ${model.provider}/${model.id} — ${model.name}`);
+				const text = total
+					? `Available model matches (registry, not a live quota/access check):\n${lines.join("\n")}`
+					: "No available models match this query.";
+				const bounded = truncateHead(text);
+				const notice = bounded.truncated
+					? "\nOutput truncated at 50KB/2000 lines. Narrow your query."
+					: total > matches.length ? `\nShowing ${matches.length} of ${total} matches. Narrow your query.` : "";
+				return { content: [{ type: "text" as const, text: bounded.content + notice }] };
+			}
+
 			const agents = discoverAgents(ctx.cwd);
 
 			if (params.action === "list") {
 				const lines = [...agents.values()]
 					.sort((a, b) => a.name.localeCompare(b.name))
 					.map((a) => `- ${a.name} (${a.source})${a.model ? ` [${a.model}]` : ""} — ${a.description || "no description"}`);
-				const text = lines.length ? `Available agents:\n${lines.join("\n")}` : "No agents found.";
+				const agentsText = lines.length ? `Available agents:\n${lines.join("\n")}` : "No agents found.";
+				const guide = loadModelGuide(getAgentDir());
+				const text = `${agentsText}\n\nModel guidance (${guide.filePath}):\n${guide.text || "(empty override; no model guidance)"}`;
+				if (truncateHead(text).truncated) throw new Error(`Agent list/model guidance is too large (50KB/2000 lines). Shorten ${guide.filePath} or agent descriptions.`);
 				return { content: [{ type: "text" as const, text }] };
 			}
 
