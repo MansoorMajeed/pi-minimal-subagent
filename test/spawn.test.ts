@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { MAX_INLINE_ANSWER_BYTES, MAX_INLINE_ERROR_BYTES, runSubagent, spillLargeAnswer } from "../src/spawn.ts";
+import { buildStatusRows } from "../src/status-layout.ts";
 
 function fakePi(dir: string, body: string): string {
 	const binDir = path.join(dir, "bin");
@@ -126,6 +127,56 @@ test("forced termination kills same-group descendants that ignore SIGTERM", { co
 		if (descendantPid) {
 			try { process.kill(descendantPid, "SIGKILL"); } catch { /* already dead */ }
 		}
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("agent_end does not freeze elapsed time before process settlement", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const message = {role:"assistant",content:[{type:"text",text:"done"}]};
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]}) + "\\n");
+		setTimeout(() => {}, 100);`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const times = [10_000, 15_000];
+	let beforeSettlement: any;
+	try {
+		const result = await runSubagent({
+			...baseOptions(dir),
+			now: () => times.shift()!,
+			onActivity: (activity) => {
+				if (activity.state === "done" && activity.endedAt === undefined) beforeSettlement = activity;
+			},
+		});
+		assert.ok(beforeSettlement);
+		assert.equal(buildStatusRows([beforeSettlement], 13_000)[2].text, "Elapsed 3s · timeout in 2s · 0 turns");
+		assert.equal(result.activity.endedAt, 15_000);
+		assert.equal(buildStatusRows([result.activity], 99_000)[2].text, "Elapsed 5s · 0 turns");
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("failed spawn does not invent child runtime", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const emptyBin = path.join(dir, "empty-bin");
+	fs.mkdirSync(emptyBin);
+	process.env.PATH = emptyBin;
+	try {
+		const result = await runSubagent({ ...baseOptions(dir), now: () => 10_000 });
+		assert.equal(result.ok, false);
+		assert.match(result.error!, /failed to spawn pi:.*ENOENT/);
+		assert.equal(result.activity.startedAt, undefined);
+		assert.equal(result.activity.deadlineAt, undefined);
+		assert.equal(result.activity.endedAt, undefined);
+		assert.equal(buildStatusRows([result.activity], 20_000)[2].text, "Not started · 0 turns");
+	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
 	}

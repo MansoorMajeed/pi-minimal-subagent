@@ -50,12 +50,11 @@ function formatTurns(activity: ChildActivity): string {
 function timingText(activity: ChildActivity, now: number): string {
 	if (activity.state === "queued") return "Queued";
 	if (activity.startedAt === undefined) return `Not started · ${formatTurns(activity)}`;
-	if (activity.state === "running") {
+	if (activity.endedAt === undefined) {
 		const timeout = activity.deadlineAt === undefined ? "" : ` · timeout in ${formatDuration(activity.deadlineAt - now)}`;
 		return `Elapsed ${formatDuration(now - activity.startedAt)}${timeout} · ${formatTurns(activity)}`;
 	}
-	const endedAt = activity.endedAt ?? activity.startedAt;
-	return `Elapsed ${formatDuration(endedAt - activity.startedAt)} · ${formatTurns(activity)}`;
+	return `Elapsed ${formatDuration(activity.endedAt - activity.startedAt)} · ${formatTurns(activity)}`;
 }
 
 export function buildStatusRows(activities: ChildActivity[], now = Date.now()): StatusRow[] {

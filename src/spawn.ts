@@ -356,19 +356,22 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				stdio: ["ignore", "pipe", "pipe"],
 				detached: true, // own process group so killTree can reap descendants
 			});
-			activity.startedAt = launchAt;
-			activity.deadlineAt = deadlineAt;
-			activity.state = "running";
-			activity.current = "starting";
-			activity.recent = [...activity.recent, "starting"].slice(-MAX_RECENT_ACTIVITY);
-			emitActivity();
+			child.once("spawn", () => {
+				if (settled) return;
+				activity.startedAt = launchAt;
+				activity.deadlineAt = deadlineAt;
+				activity.state = "running";
+				activity.current = "starting";
+				activity.recent = [...activity.recent, "starting"].slice(-MAX_RECENT_ACTIVITY);
+				emitActivity();
 
-			timer = setTimeout(() => {
-				timedOut = true;
-				killTree("SIGTERM");
-				killTimer = setTimeout(() => killTree("SIGKILL"), 3000);
-				killTimer.unref();
-			}, opts.timeoutMs);
+				timer = setTimeout(() => {
+					timedOut = true;
+					killTree("SIGTERM");
+					killTimer = setTimeout(() => killTree("SIGKILL"), 3000);
+					killTimer.unref();
+				}, opts.timeoutMs);
+			});
 
 			if (signal) signal.addEventListener("abort", onAbort);
 

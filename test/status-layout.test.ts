@@ -62,6 +62,17 @@ test("queued children show no invented runtime and no report", () => {
 	]);
 });
 
+test("terminal-looking states keep advancing until runner settlement", () => {
+	for (const state of ["done", "turn_limit"] as const) {
+		const rows = buildStatusRows([activity({ state, endedAt: undefined, deadlineAt: 31_000 })], 13_000);
+		assert.deepEqual(rows[2], {
+			kind: "detail",
+			text: "Elapsed 12s · timeout in 18s · 2 turns",
+			historical: false,
+		});
+	}
+});
+
 test("terminal elapsed time freezes and explicit turn caps appear only when configured", () => {
 	const terminal = buildStatusRows([
 		activity({ state: "done", startedAt: 1_000, endedAt: 13_000, deadlineAt: 31_000, maxTurns: 80, recent: ["final", "done"] }),
