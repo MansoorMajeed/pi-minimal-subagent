@@ -38,7 +38,7 @@ test("activity reducer keeps compact current and recent child activity", () => {
 		"queued",
 		"started",
 		"read src/index.ts",
-		"Mapped the implementation and found the relevant entry point.",
+		"writing response",
 		"done",
 	]);
 	assert.deepEqual(activity.usage, {
@@ -53,14 +53,21 @@ test("activity reducer keeps compact current and recent child activity", () => {
 	});
 });
 
-test("activity retains five entries and replaces streaming text in place", () => {
+test("assistant response bodies use one stable writing activity", () => {
 	const activity = createActivity("scout");
+	const streamedAnswer = `streamed-${"x".repeat(200)}`;
+	const finalAnswer = `final-${"y".repeat(200)}`;
 	applyActivityEvent(activity, { type: "turn_start" });
-	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Map" } });
-	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ping" } });
+	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: streamedAnswer } });
+	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " more" } });
+	applyActivityEvent(activity, {
+		type: "message_end",
+		message: { role: "assistant", content: [{ type: "text", text: finalAnswer }] },
+	});
 
-	assert.equal(activity.current, "Mapping");
-	assert.deepEqual(activity.recent, ["queued", "thinking", "Mapping"]);
+	assert.equal(activity.current, "writing response");
+	assert.deepEqual(activity.recent, ["queued", "thinking", "writing response"]);
+	assert.ok(activity.recent.every((entry) => !entry.includes("streamed-") && !entry.includes("final-")));
 
 	for (const path of ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"]) {
 		applyActivityEvent(activity, { type: "tool_execution_start", toolName: "read", args: { path } });
@@ -102,6 +109,7 @@ test("completed assistant progress reports are retained separately from tool act
 		},
 	});
 	assert.equal(activity.reported, "mapped auth");
+	assert.equal(activity.current, "writing response");
 
 	applyActivityEvent(activity, { type: "tool_execution_start", toolName: "read", args: { path: "src/auth.ts" } });
 	assert.equal(activity.reported, "mapped auth");
@@ -136,14 +144,17 @@ test("progress parser ignores empty reports and non-assistant event text", () =>
 	assert.equal(activity.reported, undefined);
 });
 
-test("tool completion ends the current streaming tail entry", () => {
+test("tool-only assistant messages do not overwrite useful tool status", () => {
 	const activity = createActivity("worker");
-	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Mapping" } });
+	applyActivityEvent(activity, { type: "tool_execution_start", toolName: "read", args: { path: "src/index.ts" } });
 	applyActivityEvent(activity, { type: "tool_execution_end", toolName: "read", isError: false });
-	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "\n" } });
-	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Next" } });
+	applyActivityEvent(activity, {
+		type: "message_end",
+		message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: "src/index.ts" } }] },
+	});
 
-	assert.deepEqual(activity.recent, ["queued", "Mapping", "read finished", "Next"]);
+	assert.equal(activity.current, "read finished");
+	assert.deepEqual(activity.recent, ["queued", "read src/index.ts", "read finished"]);
 });
 
 test("usage aggregates assistant messages but ignores repeated turn event forms", () => {
@@ -180,9 +191,9 @@ test("usage aggregates assistant messages but ignores repeated turn event forms"
 test("activity text is single-line, bounded, and deduplicated", () => {
 	const activity = createActivity("reviewer");
 	const long = `first\n${"x".repeat(150)}`;
-	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: long } });
+	applyActivityEvent(activity, { type: "tool_execution_start", toolName: "bash", args: { command: long } });
 	const first = activity.current;
-	applyActivityEvent(activity, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "" } });
+	applyActivityEvent(activity, { type: "tool_execution_start", toolName: "bash", args: { command: long } });
 
 	assert.equal(first.includes("\n"), false);
 	assert.ok(first.length <= 101);

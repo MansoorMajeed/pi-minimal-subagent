@@ -365,7 +365,7 @@ test("turn limit stops before the next turn and retains the last answer", { conc
 		assert.equal(result.answer, "answer 2");
 		assert.equal(result.activity.state, "turn_limit");
 		assert.ok(result.activity.endedAt! >= result.activity.startedAt!);
-		assert.deepEqual(result.activity.recent, ["queued", "starting", "answer 1", "answer 2", "turn limit reached (2)"]);
+		assert.deepEqual(result.activity.recent, ["queued", "starting", "writing response", "turn limit reached (2)"]);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -408,7 +408,8 @@ test("normal completion retains five recent activities", { concurrency: false },
 	try {
 		const result = await runSubagent(baseOptions(dir));
 		assert.equal(result.ok, true);
-		assert.deepEqual(result.activity.recent, ["read d.ts", "read e.ts", "read f.ts", "final answer", "done"]);
+		assert.equal(result.answer, "final answer");
+		assert.deepEqual(result.activity.recent, ["read d.ts", "read e.ts", "read f.ts", "writing response", "done"]);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
