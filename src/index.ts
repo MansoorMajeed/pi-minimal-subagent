@@ -28,6 +28,7 @@ const ToolParams = Type.Object({
 			Type.Object({
 				agent: Type.String({ description: "Agent name (e.g. scout, reviewer, planner, oracle, worker)" }),
 				task: Type.String({ description: "Concrete instruction for this subagent" }),
+				label: Type.Optional(Type.String({ description: "Concise display goal (e.g. 'Implement refresh-token rotation')" })),
 				model: Type.Optional(Type.String({ description: "Override model (e.g. 'anthropic/claude-sonnet-4')" })),
 			}),
 			{ description: "One entry per subagent. Multiple entries run concurrently.", minItems: 1, maxItems: MAX_TASKS },
@@ -81,7 +82,7 @@ function renderStatusRow(row: StatusRow, theme: any): string {
 	return `  ${theme.fg(row.historical ? "dim" : "muted", text)}`;
 }
 
-class SubagentStatusComponent implements Component {
+export class SubagentStatusComponent implements Component {
 	private rows: StatusRow[];
 	private output: string | undefined;
 	private theme: any;
@@ -101,6 +102,13 @@ class SubagentStatusComponent implements Component {
 	}
 
 	invalidate(): void {}
+}
+
+function expandedTaskText(activities: ChildActivity[], completedOutput?: string): string {
+	const tasks = activities
+		.map((activity, index) => `Task [${index + 1}] ${singleLineStatusText(activity.agent)}\n${sanitizeTerminalText(activity.task)}`)
+		.join("\n\n");
+	return completedOutput ? `${tasks}\n\nCompleted output\n${completedOutput}` : tasks;
 }
 
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
@@ -153,7 +161,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const logPath = path.join(runDir, `${label}.jsonl`);
 				const model = t.model ?? cfg.model;
 				fs.writeFileSync(logPath, "");
-				const goal = displayGoal(undefined, t.task);
+				const goal = displayGoal(t.label, t.task);
 				return {
 					task: t,
 					cfg,
@@ -185,31 +193,38 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				else if (!updateTimer) updateTimer = setTimeout(update, delay);
 			};
 			update();
+			const clockTimer = setInterval(scheduleUpdate, 1_000);
+			clockTimer.unref?.();
 
-			const results = await runPool(planned, MAX_CONCURRENCY, (p) =>
-				runSubagent({
-					task: p.task.task,
-					label: p.task.agent,
-					goal: p.goal,
-					logPath: p.logPath,
-					model: p.model,
-					thinking: p.cfg.thinking,
-					tools: p.cfg.tools,
-					extensions: p.cfg.extensions,
-					inheritProjectContext: p.cfg.inheritProjectContext,
-					maxTurns: p.cfg.maxTurns,
-					systemPrompt: p.cfg.systemPrompt,
-					systemPromptMode: p.cfg.systemPromptMode,
-					cwd: ctx.cwd,
-					timeoutMs: p.cfg.timeoutMs,
-					signal,
-					onActivity: (activity) => {
-						p.activity = activity;
-						scheduleUpdate();
-					},
-				}),
-			);
-			if (updateTimer) clearTimeout(updateTimer);
+			let results: SubagentResult[];
+			try {
+				results = await runPool(planned, MAX_CONCURRENCY, (p) =>
+					runSubagent({
+						task: p.task.task,
+						label: p.task.agent,
+						goal: p.goal,
+						logPath: p.logPath,
+						model: p.model,
+						thinking: p.cfg.thinking,
+						tools: p.cfg.tools,
+						extensions: p.cfg.extensions,
+						inheritProjectContext: p.cfg.inheritProjectContext,
+						maxTurns: p.cfg.maxTurns,
+						systemPrompt: p.cfg.systemPrompt,
+						systemPromptMode: p.cfg.systemPromptMode,
+						cwd: ctx.cwd,
+						timeoutMs: p.cfg.timeoutMs,
+						signal,
+						onActivity: (activity) => {
+							p.activity = activity;
+							scheduleUpdate();
+						},
+					}),
+				);
+			} finally {
+				clearInterval(clockTimer);
+				if (updateTimer) clearTimeout(updateTimer);
+			}
 
 			return {
 				content: [{ type: "text" as const, text: summarize(results) }],
@@ -238,8 +253,11 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			}
 
 			let output: string | undefined;
-			if (expanded && !isPartial) {
-				output = result.content?.find((item: any) => item.type === "text")?.text;
+			if (expanded) {
+				const completedOutput = isPartial
+					? undefined
+					: result.content?.find((item: any) => item.type === "text")?.text;
+				output = expandedTaskText(details.activities, completedOutput);
 			}
 			return new SubagentStatusComponent(buildStatusRows(details.activities), output, theme);
 		},

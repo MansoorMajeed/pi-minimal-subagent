@@ -100,8 +100,9 @@ export function snapshotActivity(activity: ChildActivity): ChildActivity {
 
 function oneLine(value: unknown, max = MAX_ACTIVITY_CHARS): string {
 	const text = sanitizeTerminalText(value).replace(/\s+/g, " ").trim();
-	if (text.length <= max) return text;
-	return `${text.slice(0, max)}…`;
+	const characters = [...text];
+	if (characters.length <= max) return text;
+	return `${characters.slice(0, max).join("")}…`;
 }
 
 export function displayGoal(label: unknown, task: unknown): string {
