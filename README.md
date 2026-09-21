@@ -120,10 +120,12 @@ Children are instructed to emit sparse standalone
 `Progress: <completed milestone; next step or blocker>` lines. `Reported:` shows
 the latest such completed assistant message. This is self-reported, may be
 omitted or inaccurate, and does not imply a percentage or ETA. Observed tool
-activity remains separate. Updates come from the child's JSONL stream. Explicit blocking calls stream the
-cards inline. Background calls use one bounded widget above the editor, showing
-at most two running cards (or queued cards when none are running), job IDs, and
-overflow counts. One shared clock advances timing during silence without adding
+activity remains separate. Assistant body text appears as a stable `writing response`
+activity rather than an excerpt; final answers and artifacts are unchanged. Updates
+come from the child's JSONL stream. Explicit blocking calls stream the cards inline.
+Background calls use one bounded widget above the editor, showing overall counts
+and at most two running cards (or queued cards when none are running). Each displayed
+job ID appears once above its card group. One shared clock advances timing during silence without adding
 model messages or transcript entries, and the widget disappears when no
 background work remains.
 
