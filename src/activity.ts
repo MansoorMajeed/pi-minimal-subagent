@@ -27,7 +27,6 @@ export interface ChildActivity {
 	current: string;
 	recent: string[];
 	usage: UsageSummary;
-	streamText?: string;
 }
 
 export interface ActivityMetadata {
@@ -122,19 +121,14 @@ function captureReportedProgress(activity: ChildActivity, message: any): void {
 	}
 }
 
-function setCurrent(activity: ChildActivity, text: string, replaceLast = false): boolean {
+function setCurrent(activity: ChildActivity, text: string): void {
 	const normalized = oneLine(text);
-	if (!normalized) return false;
+	if (!normalized) return;
 	activity.current = normalized;
-	if (replaceLast && activity.recent.length > 0) {
-		activity.recent[activity.recent.length - 1] = normalized;
-		return true;
-	}
 	if (activity.recent[activity.recent.length - 1] !== normalized) {
 		activity.recent.push(normalized);
 		if (activity.recent.length > MAX_RECENT_ACTIVITY) activity.recent.splice(0, activity.recent.length - MAX_RECENT_ACTIVITY);
 	}
-	return true;
 }
 
 function captureModel(activity: ChildActivity, message: any): void {
@@ -143,15 +137,6 @@ function captureModel(activity: ChildActivity, message: any): void {
 	const model = typeof message.model === "string" ? message.model.trim() : "";
 	if (provider && model) activity.model = `${provider}/${model}`;
 	else if (model && !(activity.model ?? "").includes("/")) activity.model = model;
-}
-
-function messageText(message: any): string {
-	if (!Array.isArray(message?.content)) return "";
-	return message.content
-		.filter((part: any) => part?.type === "text" && typeof part.text === "string")
-		.map((part: any) => part.text)
-		.join(" ")
-		.trim();
 }
 
 function toolArgs(args: unknown): string {
@@ -198,7 +183,6 @@ export function applyActivityEvent(activity: ChildActivity, rawEvent: unknown): 
 			break;
 		case "turn_start":
 			activity.state = "running";
-			activity.streamText = "";
 			setCurrent(activity, "thinking");
 			break;
 		case "message_start":
@@ -208,39 +192,37 @@ export function applyActivityEvent(activity: ChildActivity, rawEvent: unknown): 
 			activity.state = "running";
 			captureModel(activity, event.message);
 			const update = event.assistantMessageEvent;
-			if (update?.type === "text_delta" && typeof update.delta === "string") {
-				const continuingStream = !!activity.streamText;
-				const streamText = `${activity.streamText ?? ""}${update.delta}`.slice(-300);
-				activity.streamText = setCurrent(activity, streamText, continuingStream) ? streamText : "";
+			if (update?.type === "text_delta" && typeof update.delta === "string" && update.delta.length > 0) {
+				setCurrent(activity, "writing response");
 			} else if (update?.type === "toolcall_end" && update.toolCall) {
-				activity.streamText = "";
 				setCurrent(activity, toolActivity(update.toolCall.name, update.toolCall.arguments));
 			}
 			break;
 		}
 		case "tool_execution_start":
 			activity.state = "running";
-			activity.streamText = "";
 			setCurrent(activity, toolActivity(event.toolName, event.args));
 			break;
 		case "tool_execution_end":
 			activity.state = "running";
-			activity.streamText = "";
 			setCurrent(activity, event.isError ? `${event.toolName ?? "tool"} failed` : `${event.toolName ?? "tool"} finished`);
 			break;
 		case "message_end":
 			if (event.message?.role === "assistant") {
 				activity.state = "running";
-				activity.streamText = "";
 				captureModel(activity, event.message);
 				captureReportedProgress(activity, event.message);
 				addUsage(activity, event.message);
-				setCurrent(activity, messageText(event.message) || "responding");
+				if (
+					Array.isArray(event.message.content) &&
+					event.message.content.some((part: any) => part?.type === "text" && typeof part.text === "string" && part.text.trim())
+				) {
+					setCurrent(activity, "writing response");
+				}
 			}
 			break;
 		case "agent_end":
 			activity.state = "done";
-			activity.streamText = "";
 			setCurrent(activity, "done");
 			break;
 	}
