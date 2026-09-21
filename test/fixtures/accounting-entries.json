@@ -6,6 +6,7 @@
       "role": "toolResult",
       "toolName": "subagent",
       "details": {
+        "runDir": "/tmp/pi-minsub/blocking-run",
         "activities": [{ "usage": { "totalTokens": 110, "cost": 0.01 } }],
         "results": [{
           "agent": "worker",
@@ -17,15 +18,97 @@
   },
   {
     "type": "custom_message",
-    "id": "background-entry",
+    "id": "background-completion-entry",
     "customType": "minimal-subagent-complete",
     "details": {
-      "activities": [{ "usage": { "totalTokens": 220, "cost": 0.02 } }],
-      "results": [{
-        "agent": "scout",
-        "usage": { "totalTokens": 220, "cost": 0.02 },
-        "activity": { "usage": { "totalTokens": 220, "cost": 0.02 } }
-      }]
+      "jobId": "background-run",
+      "runDir": "/tmp/pi-minsub/background-run",
+      "state": "completed",
+      "activities": [
+        { "usage": { "totalTokens": 220, "cost": 0.02 } },
+        { "usage": { "totalTokens": 55, "cost": 0.005 } }
+      ],
+      "results": [
+        {
+          "agent": "scout",
+          "usage": { "totalTokens": 220, "cost": 0.02 },
+          "activity": { "usage": { "totalTokens": 220, "cost": 0.02 } }
+        },
+        {
+          "agent": "reviewer",
+          "usage": { "totalTokens": 55, "cost": 0.005 },
+          "activity": { "usage": { "totalTokens": 55, "cost": 0.005 } }
+        }
+      ]
+    }
+  },
+  {
+    "type": "message",
+    "id": "background-status-entry",
+    "message": {
+      "role": "toolResult",
+      "toolName": "subagent",
+      "details": {
+        "jobId": "background-run",
+        "runDir": "/tmp/pi-minsub/background-run",
+        "state": "completed",
+        "results": [
+          {
+            "agent": "scout",
+            "usage": { "totalTokens": 220, "cost": 0.02 },
+            "activity": { "usage": { "totalTokens": 220, "cost": 0.02 } }
+          },
+          {
+            "agent": "reviewer",
+            "usage": { "totalTokens": 55, "cost": 0.005 },
+            "activity": { "usage": { "totalTokens": 55, "cost": 0.005 } }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "message",
+    "id": "background-cancel-entry",
+    "message": {
+      "role": "toolResult",
+      "toolName": "subagent",
+      "details": {
+        "jobId": "background-run",
+        "runDir": "/tmp/pi-minsub/background-run",
+        "state": "completed",
+        "results": [
+          {
+            "agent": "scout",
+            "usage": { "totalTokens": 220, "cost": 0.02 },
+            "activity": { "usage": { "totalTokens": 220, "cost": 0.02 } }
+          },
+          {
+            "agent": "reviewer",
+            "usage": { "totalTokens": 55, "cost": 0.005 },
+            "activity": { "usage": { "totalTokens": 55, "cost": 0.005 } }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "message",
+    "id": "cancelled-job-entry",
+    "message": {
+      "role": "toolResult",
+      "toolName": "subagent",
+      "details": {
+        "jobId": "cancelled-run",
+        "runDir": "/tmp/pi-minsub/cancelled-run",
+        "state": "cancelled",
+        "results": [{
+          "agent": "worker",
+          "ok": false,
+          "usage": { "totalTokens": 40, "cost": 0.004 },
+          "activity": { "usage": { "totalTokens": 40, "cost": 0.004 } }
+        }]
+      }
     }
   }
 ]
