@@ -12,13 +12,13 @@ import { Type } from "typebox";
 import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
+import { JobRegistry, type JobHandle } from "./jobs.ts";
 import { loadModelGuide, searchModels } from "./model-guidance.ts";
 import { summarize } from "./result-summary.ts";
-import { runSubagent, type SubagentResult } from "./spawn.ts";
+import type { SubagentResult } from "./spawn.ts";
 import { buildStatusRows, singleLineStatusText, type StatusHeaderRow, type StatusRow } from "./status-layout.ts";
 
 const MAX_TASKS = 8;
-const MAX_CONCURRENCY = 4;
 
 const ToolParams = Type.Object({
 	action: Type.Optional(
@@ -40,21 +40,6 @@ const ToolParams = Type.Object({
 
 function slug(s: string): string {
 	return s.replace(/[^\w.-]/g, "_").slice(0, 40);
-}
-
-/** Run `fn` over items with bounded concurrency, preserving result order. */
-async function runPool<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
-	const results = new Array<R>(items.length);
-	let next = 0;
-	const worker = async () => {
-		while (true) {
-			const i = next++;
-			if (i >= items.length) return;
-			results[i] = await fn(items[i], i);
-		}
-	};
-	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-	return results;
 }
 
 interface SubagentDetails {
@@ -115,6 +100,8 @@ function expandedTaskText(activities: ChildActivity[], completedOutput?: string)
 
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	if (isMinimalSubagentChild()) return;
+
+	const jobs = new JobRegistry();
 
 	pi.registerTool({
 		name: "subagent",
@@ -196,33 +183,13 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				};
 			});
 
-			let lastUpdateAt = 0;
-			let updateTimer: ReturnType<typeof setTimeout> | undefined;
-			const update = () => {
-				lastUpdateAt = Date.now();
-				updateTimer = undefined;
-				const done = planned.filter((item) => item.activity.state === "done" || !["queued", "running"].includes(item.activity.state)).length;
-				onUpdate?.({
-					content: [{ type: "text" as const, text: `Subagents: ${done}/${planned.length} complete` }],
-					details: {
-						runDir,
-						activities: planned.map((item) => ({ ...item.activity, recent: [...item.activity.recent], usage: { ...item.activity.usage } })),
-					} satisfies SubagentDetails,
-				});
-			};
-			const scheduleUpdate = () => {
-				const delay = Math.max(0, 150 - (Date.now() - lastUpdateAt));
-				if (delay === 0) update();
-				else if (!updateTimer) updateTimer = setTimeout(update, delay);
-			};
-			update();
-			const clockTimer = setInterval(scheduleUpdate, 1_000);
-			clockTimer.unref?.();
-
-			let results: SubagentResult[];
-			try {
-				results = await runPool(planned, MAX_CONCURRENCY, (p) =>
-					runSubagent({
+			const handle: JobHandle = jobs.submit({
+				id: runId,
+				runDir,
+				background: false,
+				children: planned.map((p) => ({
+					activity: p.activity,
+					options: {
 						task: p.task.task,
 						label: p.task.agent,
 						goal: p.goal,
@@ -237,14 +204,40 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						systemPromptMode: p.cfg.systemPromptMode,
 						cwd: ctx.cwd,
 						timeoutMs: p.cfg.timeoutMs,
-						signal,
-						onActivity: (activity) => {
-							p.activity = activity;
-							scheduleUpdate();
-						},
-					}),
-				);
+					},
+				})),
+			});
+			let lastUpdateAt = 0;
+			let updateTimer: ReturnType<typeof setTimeout> | undefined;
+			const update = () => {
+				lastUpdateAt = Date.now();
+				updateTimer = undefined;
+				const snapshot = handle.snapshot();
+				const done = snapshot.activities.filter((activity) => !["queued", "running"].includes(activity.state)).length;
+				onUpdate?.({
+					content: [{ type: "text" as const, text: `Subagents: ${done}/${planned.length} complete` }],
+					details: { runDir, activities: snapshot.activities } satisfies SubagentDetails,
+				});
+			};
+			const scheduleUpdate = () => {
+				const delay = Math.max(0, 150 - (Date.now() - lastUpdateAt));
+				if (delay === 0) update();
+				else if (!updateTimer) updateTimer = setTimeout(update, delay);
+			};
+			const unsubscribe = jobs.subscribe(scheduleUpdate);
+			const onAbort = () => { void jobs.cancel(runId); };
+			if (signal?.aborted) onAbort();
+			else signal?.addEventListener("abort", onAbort, { once: true });
+			update();
+			const clockTimer = setInterval(scheduleUpdate, 1_000);
+			clockTimer.unref?.();
+
+			let results: SubagentResult[];
+			try {
+				results = await handle.completion;
 			} finally {
+				unsubscribe();
+				signal?.removeEventListener("abort", onAbort);
 				clearInterval(clockTimer);
 				if (updateTimer) clearTimeout(updateTimer);
 			}
