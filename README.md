@@ -64,8 +64,10 @@ subagent({ action: "cancel", id: "<exact-job-id>" })
 ```
 
 The background receipt contains the exact job ID, goals, and artifact directory.
-Completion adds one aggregate follow-up after every child settles; it waits behind
-an in-progress parent response rather than steering it. The parent can continue
+Natural completion adds one aggregate follow-up after every child settles; it
+waits behind an in-progress parent response rather than steering it. Explicitly
+cancelled jobs do not send that follow-up; their partial results remain available
+through exact-ID status. The parent can continue
 independent work, or briefly acknowledge that work is underway and yield. Use the
 completion to start dependent work. A newer user message does not steer children,
 so redirect by cancelling, letting cancellation settle, and relaunching with
