@@ -16,11 +16,27 @@ export interface UsageSummary {
 export interface ChildActivity {
 	agent: string;
 	model?: string;
+	task: string;
+	goal: string;
+	reported?: string;
+	startedAt?: number;
+	deadlineAt?: number;
+	endedAt?: number;
+	maxTurns?: number;
 	state: ActivityState;
 	current: string;
 	recent: string[];
 	usage: UsageSummary;
 	streamText?: string;
+}
+
+export interface ActivityMetadata {
+	task?: string;
+	goal?: string;
+	startedAt?: number;
+	deadlineAt?: number;
+	endedAt?: number;
+	maxTurns?: number;
 }
 
 const MAX_ACTIVITY_CHARS = 100;
@@ -60,10 +76,17 @@ export class JsonLineParser {
 	}
 }
 
-export function createActivity(agent: string, model = "default"): ChildActivity {
+export function createActivity(agent: string, model = "default", metadata: ActivityMetadata = {}): ChildActivity {
+	const task = metadata.task ?? "";
 	return {
 		agent,
 		model,
+		task,
+		goal: metadata.goal ?? displayGoal(undefined, task),
+		startedAt: metadata.startedAt,
+		deadlineAt: metadata.deadlineAt,
+		endedAt: metadata.endedAt,
+		maxTurns: metadata.maxTurns,
 		state: "queued",
 		current: "queued",
 		recent: ["queued"],
@@ -79,6 +102,23 @@ function oneLine(value: unknown, max = MAX_ACTIVITY_CHARS): string {
 	const text = sanitizeTerminalText(value).replace(/\s+/g, " ").trim();
 	if (text.length <= max) return text;
 	return `${text.slice(0, max)}…`;
+}
+
+export function displayGoal(label: unknown, task: unknown): string {
+	return oneLine(typeof label === "string" && label.trim() ? label : task);
+}
+
+function captureReportedProgress(activity: ChildActivity, message: any): void {
+	if (message?.role !== "assistant" || !Array.isArray(message.content)) return;
+	const rawText = message.content
+		.filter((part: any) => part?.type === "text" && typeof part.text === "string")
+		.map((part: any) => part.text)
+		.join("\n");
+	for (const line of rawText.split(/\r?\n/)) {
+		if (!line.startsWith("Progress:")) continue;
+		const report = oneLine(line.slice("Progress:".length));
+		if (report) activity.reported = report;
+	}
 }
 
 function setCurrent(activity: ChildActivity, text: string, replaceLast = false): boolean {
@@ -192,6 +232,7 @@ export function applyActivityEvent(activity: ChildActivity, rawEvent: unknown): 
 				activity.state = "running";
 				activity.streamText = "";
 				captureModel(activity, event.message);
+				captureReportedProgress(activity, event.message);
 				addUsage(activity, event.message);
 				setCurrent(activity, messageText(event.message) || "responding");
 			}

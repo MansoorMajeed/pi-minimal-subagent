@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyActivityEvent, createActivity, JsonLineParser, sanitizeTerminalText } from "../src/activity.ts";
+import { applyActivityEvent, createActivity, displayGoal, JsonLineParser, sanitizeTerminalText } from "../src/activity.ts";
 
 test("JsonLineParser preserves partial chunks and ignores malformed lines", () => {
 	const parser = new JsonLineParser();
@@ -9,6 +9,13 @@ test("JsonLineParser preserves partial chunks and ignores malformed lines", () =
 		{ type: "tool_execution_start", toolName: "read", args: { path: "src/index.ts" } },
 	]);
 	assert.deepEqual(parser.flush(), []);
+});
+
+test("display goals prefer a normalized label and fall back to a clipped task preview", () => {
+	assert.equal(displayGoal("  Review\n auth\tchanges  ", "ignored"), "Review auth changes");
+	assert.equal(displayGoal(undefined, "  Inspect\n the auth flow  "), "Inspect the auth flow");
+	assert.ok(displayGoal(undefined, "x".repeat(150)).length <= 101);
+	assert.equal(displayGoal("\x1b[2JGoal", "ignored"), "Goal");
 });
 
 test("activity reducer keeps compact current and recent child activity", () => {
@@ -83,6 +90,50 @@ test("activity shows the configured model then captures the observed provider an
 		message: { role: "assistant", provider: "openai", model: "gpt-5", content: [] },
 	});
 	assert.equal(fallback.model, "openai/gpt-5");
+});
+
+test("completed assistant progress reports are retained separately from tool activity", () => {
+	const activity = createActivity("worker");
+	applyActivityEvent(activity, {
+		type: "message_end",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: "Progress: mapped auth\nOrdinary explanation" }],
+		},
+	});
+	assert.equal(activity.reported, "mapped auth");
+
+	applyActivityEvent(activity, { type: "tool_execution_start", toolName: "read", args: { path: "src/auth.ts" } });
+	assert.equal(activity.reported, "mapped auth");
+	applyActivityEvent(activity, {
+		type: "message_end",
+		message: { role: "assistant", content: [{ type: "text", text: "ordinary answer" }] },
+	});
+	assert.equal(activity.reported, "mapped auth");
+
+	applyActivityEvent(activity, {
+		type: "message_end",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: "Progress: first\nProgress: \x1b[2Jsecond\tstep\nProgress:   " }],
+		},
+	});
+	assert.equal(activity.reported, "second step");
+});
+
+test("progress parser ignores empty reports and non-assistant event text", () => {
+	const activity = createActivity("worker");
+	applyActivityEvent(activity, {
+		type: "message_end",
+		message: { role: "assistant", content: [{ type: "text", text: "Progress:   \nnot a report" }] },
+	});
+	applyActivityEvent(activity, {
+		type: "message_end",
+		message: { role: "toolResult", content: [{ type: "text", text: "Progress: forged" }] },
+	});
+	applyActivityEvent(activity, { type: "tool_execution_end", toolName: "Progress: forged", isError: false });
+	applyActivityEvent(activity, { type: "turn_end", message: { role: "assistant", content: [{ type: "text", text: "Progress: forged" }] } });
+	assert.equal(activity.reported, undefined);
 });
 
 test("tool completion ends the current streaming tail entry", () => {

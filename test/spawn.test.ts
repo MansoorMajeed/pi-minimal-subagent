@@ -52,6 +52,9 @@ test("runSubagent reports and reaps a timed-out child", { concurrency: false }, 
 		assert.equal(result.ok, false);
 		assert.equal(result.timedOut, true);
 		assert.equal(result.activity.state, "timed_out");
+		assert.ok(result.activity.startedAt !== undefined);
+		assert.ok(result.activity.endedAt! >= result.activity.startedAt!);
+		assert.equal(result.activity.deadlineAt, result.activity.startedAt! + 30);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -71,6 +74,8 @@ test("runSubagent reports and reaps an aborted child", { concurrency: false }, a
 		assert.equal(result.timedOut, false);
 		assert.equal(result.error, "aborted");
 		assert.equal(result.activity.state, "aborted");
+		assert.ok(result.activity.startedAt !== undefined);
+		assert.ok(result.activity.endedAt! >= result.activity.startedAt!);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -217,6 +222,7 @@ test("launch guidance preserves the task and describes timeout and optional turn
 		assert.match(uncappedTask, /^Task: keep this exact task\n\nRuntime limits:/);
 		assert.match(uncappedTask, /5000 ms/);
 		assert.match(uncappedTask, /Absolute UTC deadline: \d{4}-\d{2}-\d{2}T/);
+		assert.match(uncappedTask, /Progress: <completed milestone; next step or blocker>/);
 		assert.doesNotMatch(uncappedTask, /turn cap/i);
 		assert.equal(uncapped.args.includes("--system-prompt"), false);
 
@@ -230,6 +236,39 @@ test("launch guidance preserves the task and describes timeout and optional turn
 		assert.equal(capped.prompt, "Replacement prompt");
 		assert.match(capped.args.at(-1), /^Task: replace-mode task\n\nRuntime limits:/);
 		assert.match(capped.args.at(-1), /Turn cap: 12 completed assistant turns/);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("runner snapshots preserve task identity and freeze lifecycle timing", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const message = {role:"assistant",content:[{type:"text",text:"Progress: implementation done; verify next"}]};
+		process.stdout.write(JSON.stringify({type:"message_end",message}) + "\\n");
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]}) + "\\n");`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const times = [10_000, 10_750];
+	try {
+		const result = await runSubagent({
+			...baseOptions(dir),
+			task: "Implement refresh-token rotation",
+			goal: "Refresh tokens",
+			maxTurns: 80,
+			now: () => times.shift()!,
+		});
+		assert.equal(result.ok, true);
+		assert.equal(result.activity.task, "Implement refresh-token rotation");
+		assert.equal(result.activity.goal, "Refresh tokens");
+		assert.equal(result.activity.reported, "implementation done; verify next");
+		assert.equal(result.activity.startedAt, 10_000);
+		assert.equal(result.activity.deadlineAt, 15_000);
+		assert.equal(result.activity.endedAt, 10_750);
+		assert.equal(result.activity.maxTurns, 80);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -255,6 +294,7 @@ test("turn limit stops before the next turn and retains the last answer", { conc
 		assert.equal(result.turnLimitExceeded, true);
 		assert.equal(result.answer, "answer 2");
 		assert.equal(result.activity.state, "turn_limit");
+		assert.ok(result.activity.endedAt! >= result.activity.startedAt!);
 		assert.deepEqual(result.activity.recent, ["queued", "starting", "answer 1", "answer 2", "turn limit reached (2)"]);
 	} finally {
 		process.env.PATH = oldPath;
@@ -448,6 +488,7 @@ test("failed children without stderr report their exit status", { concurrency: f
 	try {
 		const result = await runSubagent(baseOptions(dir));
 		assert.equal(result.error, "exited with status 7");
+		assert.ok(result.activity.endedAt! >= result.activity.startedAt!);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });

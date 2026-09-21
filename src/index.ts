@@ -9,7 +9,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { createActivity, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
+import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { summarize } from "./result-summary.ts";
@@ -153,7 +153,16 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const logPath = path.join(runDir, `${label}.jsonl`);
 				const model = t.model ?? cfg.model;
 				fs.writeFileSync(logPath, "");
-				return { task: t, cfg, label, logPath, model, activity: createActivity(t.agent, model) };
+				const goal = displayGoal(undefined, t.task);
+				return {
+					task: t,
+					cfg,
+					label,
+					logPath,
+					model,
+					goal,
+					activity: createActivity(t.agent, model, { task: t.task, goal, maxTurns: cfg.maxTurns }),
+				};
 			});
 
 			let lastUpdateAt = 0;
@@ -181,6 +190,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				runSubagent({
 					task: p.task.task,
 					label: p.task.agent,
+					goal: p.goal,
 					logPath: p.logPath,
 					model: p.model,
 					thinking: p.cfg.thinking,
