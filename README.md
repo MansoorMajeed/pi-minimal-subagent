@@ -32,8 +32,8 @@ previous result included in the next task.
 ```ts
 subagent({
   tasks: [
-    { agent: "scout", task: "map the auth flow", model: "anthropic/claude-haiku-4-5" },
-    { agent: "reviewer", task: "review this diff for bugs" },
+    { agent: "scout", task: "map the auth flow", label: "Map auth flow", model: "anthropic/claude-haiku-4-5" },
+    { agent: "reviewer", task: "review this diff for bugs", label: "Review correctness" },
   ],
 })
 ```
@@ -41,29 +41,47 @@ subagent({
 Up to 8 tasks run with concurrency 4. Use
 `subagent({ action: "list" })` to enumerate bundled and custom agents.
 
+| Task field | Behavior |
+|---|---|
+| `agent` | Required agent name. |
+| `task` | Required complete child instructions. |
+| `label` | Optional concise display goal; never replaces or modifies `task`. |
+| `model` | Optional per-task model override. |
+
 ## Inline activity
 
 While a call is running, each child keeps a six-row status tail in any terminal
 or multiplexer:
 
 ```text
-● scout running model: anthropic/claude-haiku-4-5
-  ↳ queued
-  ↳ started
-  ↳ thinking
+● scout running model: anthropic/claude-haiku-4-5 [12,400 tok · $0.0310]
+  Goal: Map auth flow
+  Elapsed 3m 12s · timeout in 26m 48s · 17 turns
+  Reported: mapped middleware; checking refresh-token handling
   ↳ read src/auth.ts
   ↳ bash git diff --stat
 ```
 
-The status always uses exactly six display rows per child: a header and the five
-most recent activities, padded above until history fills in. `Ctrl+O` does not
-change the status block; after completion it shows or hides the full child
-output below it. Status rows are clipped to the terminal width instead of
-wrapping, so the block stays in place while activity changes. The header shows
-the configured model until the child reports its resolved provider/model, and
-includes turns, tokens, and cost when available. Updates come directly from
-each child's JSONL event stream and TUI rendering is throttled to avoid churn;
-streaming text replaces one live tail entry instead of adding a row per delta.
+The status always uses exactly six display rows per child: a header, goal,
+elapsed/timeout budget, latest reported milestone, and the two latest observed
+activities. Missing rows are padded above the activity tail. Queued children do
+not accrue runtime; terminal elapsed time freezes. An explicit turn cap appears
+as, for example, `17/80 turns`. The timeout countdown is a hard execution budget,
+not an ETA.
+
+The optional task `label` is display-only. Without one, the goal is a clipped
+single-line preview of the task; the complete original task remains available
+in expanded view while the child is running. `Ctrl+O` shows assigned tasks and,
+after completion, the full child output below the fixed status block. Rows are
+Unicode-safely clipped to terminal width rather than wrapped.
+
+Children are instructed to emit sparse standalone
+`Progress: <completed milestone; next step or blocker>` lines. `Reported:` shows
+the latest such completed assistant message. This is self-reported, may be
+omitted or inaccurate, and does not imply a percentage or ETA. Observed tool
+activity remains separate. Updates come from the child's JSONL stream; one
+clock refresh per tool call advances timing during silence without adding model
+messages or transcript entries.
 
 There is no split-pane observer or `observe` parameter.
 
@@ -99,6 +117,7 @@ model: anthropic/claude-haiku-4-5
 systemPromptMode: append
 inheritProjectContext: true
 maxTurns: 12
+timeoutMs: 1800000
 ---
 
 Agent system prompt.
@@ -114,7 +133,8 @@ Supported runtime frontmatter:
 | `systemPromptMode` | `append` (default) or `replace`. |
 | `extensions` | Omitted loads normal extensions; empty disables discovery; values explicitly allowlist extension paths. |
 | `inheritProjectContext` | Defaults to `true`; `false` passes `--no-context-files`. |
-| `maxTurns` | Positive integer hard cap; defaults to 50 completed assistant turns. |
+| `maxTurns` | Optional positive-integer hard cap. Omitted, invalid, or nonpositive values mean no turn cap. |
+| `timeoutMs` | Positive integer wall-clock timeout in milliseconds; defaults to 1,800,000 (30 minutes). Values outside Node's supported timer range use the default. |
 
 Extension allowlist examples:
 
@@ -134,9 +154,16 @@ safe without those guards.
 
 - Child processes receive `PI_MINIMAL_SUBAGENT_CHILD=1`; this package does not
   register another `subagent` tool inside them, preventing recursive fan-out.
-- Children run with `--no-session` and a 10-minute wall-clock timeout.
-- `maxTurns` defaults to 50. A child may finish naturally on turn 50; it is
-  stopped only if it attempts turn 51. Its last completed answer is retained.
+- Children run with `--no-session` and a 30-minute wall-clock timeout by
+  default. Agent frontmatter can set `timeoutMs` to another supported positive
+  integer.
+- There is no default turn cap. A positive-integer `maxTurns` stops the child
+  before the next turn after that many completed assistant turns; its last
+  completed answer is retained.
+- Each child receives its hard timeout, absolute UTC deadline, and optional turn
+  cap in the task message. Deadline awareness and a pre-deadline handoff are
+  best effort: there is no guaranteed warning, checkpoint, or safe interruption
+  boundary. The existing hard timeout still terminates the process group.
 - The parent abort signal terminates the child's whole process group, with a
   SIGKILL fallback.
 - Child-derived terminal controls are stripped at the TUI boundary without

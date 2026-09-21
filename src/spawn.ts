@@ -19,7 +19,6 @@ import {
 	snapshotActivity,
 	type ChildActivity,
 } from "./activity.ts";
-import { DEFAULT_MAX_TURNS } from "./agent-options.ts";
 import { MINIMAL_SUBAGENT_CHILD_ENV } from "./child-boundary.ts";
 
 export const MAX_INLINE_ANSWER_BYTES = 16 * 1024;
@@ -30,6 +29,8 @@ export interface SubagentRunOptions {
 	task: string;
 	/** Display + filename label (the agent name). */
 	label: string;
+	/** Short display goal; falls back to a preview of task. */
+	goal?: string;
 	/** Path to the JSONL log file to tee stdout into. */
 	logPath: string;
 	model?: string;
@@ -53,6 +54,8 @@ export interface SubagentRunOptions {
 	signal?: AbortSignal;
 	/** Receives snapshots derived from the child's JSONL event stream. */
 	onActivity?: (activity: ChildActivity) => void;
+	/** Injectable clock for deterministic lifecycle tests. */
+	now?: () => number;
 }
 
 export interface SubagentResult {
@@ -181,10 +184,15 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let child: ReturnType<typeof spawn> | undefined;
 		const signal = opts.signal;
-		const activity = createActivity(opts.label, opts.model);
+		const now = opts.now ?? Date.now;
+		const activity = createActivity(opts.label, opts.model, {
+			task: opts.task,
+			goal: opts.goal,
+			maxTurns: opts.maxTurns,
+		});
 		const eventParser = new JsonLineParser();
 		const stdoutDecoder = new StringDecoder("utf8");
-		const maxTurns = Number.isInteger(opts.maxTurns) && (opts.maxTurns ?? 0) > 0 ? opts.maxTurns! : DEFAULT_MAX_TURNS;
+		const maxTurns = Number.isInteger(opts.maxTurns) && (opts.maxTurns ?? 0) > 0 ? opts.maxTurns : undefined;
 
 		const emitActivity = () => opts.onActivity?.(snapshotActivity(activity));
 		const processEvent = (event: unknown) => {
@@ -193,6 +201,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				event &&
 				typeof event === "object" &&
 				(event as { type?: unknown }).type === "turn_start" &&
+				maxTurns !== undefined &&
 				activity.usage.turns >= maxTurns
 			) {
 				turnLimitExceeded = true;
@@ -261,6 +270,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		const settle = (exitCode: number | null, errorOverride?: string) => {
 			if (settled) return;
 			settled = true;
+			if (activity.startedAt !== undefined) activity.endedAt = now();
 			if (timedOut || aborted || turnLimitExceeded) killTree("SIGKILL");
 			cleanup();
 			const answer = turnLimitExceeded ? acceptedAnswerAtLimit : extractFinalAnswer(captured);
@@ -319,8 +329,6 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				fs.writeFileSync(promptFile, opts.systemPrompt, { mode: 0o600 });
 				args.push(opts.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptFile);
 			}
-			args.push(`Task: ${opts.task}`);
-
 			fs.mkdirSync(path.dirname(opts.logPath), { recursive: true });
 			logStream = fs.createWriteStream(opts.logPath, { flags: "w" });
 			// A stream error (ENOSPC/EACCES) would otherwise emit an unhandled
@@ -334,23 +342,36 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				return;
 			}
 
+			const launchAt = now();
+			const deadlineAt = launchAt + opts.timeoutMs;
+			const deadline = new Date(deadlineAt).toISOString();
+			const turnGuidance = maxTurns === undefined ? "" : `\n- Turn cap: ${maxTurns} completed assistant turns.`;
+			args.push(
+				`Task: ${opts.task}\n\nRuntime limits:\n- Hard timeout: ${opts.timeoutMs} ms. Absolute UTC deadline: ${deadline}.${turnGuidance}\n- Before substantial work and at meaningful milestones, report one sparse factual line: Progress: <completed milestone; next step or blocker>.\n- If possible before the deadline, leave a concise handoff of completed work, verification, and remaining work. Finish with a normal final answer.`,
+			);
+
 			child = spawn("pi", args, {
 				cwd: opts.cwd,
 				env: { ...process.env, [MINIMAL_SUBAGENT_CHILD_ENV]: "1" },
 				stdio: ["ignore", "pipe", "pipe"],
 				detached: true, // own process group so killTree can reap descendants
 			});
-			activity.state = "running";
-			activity.current = "starting";
-			activity.recent = [...activity.recent, "starting"].slice(-MAX_RECENT_ACTIVITY);
-			emitActivity();
+			child.once("spawn", () => {
+				if (settled) return;
+				activity.startedAt = launchAt;
+				activity.deadlineAt = deadlineAt;
+				activity.state = "running";
+				activity.current = "starting";
+				activity.recent = [...activity.recent, "starting"].slice(-MAX_RECENT_ACTIVITY);
+				emitActivity();
 
-			timer = setTimeout(() => {
-				timedOut = true;
-				killTree("SIGTERM");
-				killTimer = setTimeout(() => killTree("SIGKILL"), 3000);
-				killTimer.unref();
-			}, opts.timeoutMs);
+				timer = setTimeout(() => {
+					timedOut = true;
+					killTree("SIGTERM");
+					killTimer = setTimeout(() => killTree("SIGKILL"), 3000);
+					killTimer.unref();
+				}, opts.timeoutMs);
+			});
 
 			if (signal) signal.addEventListener("abort", onAbort);
 

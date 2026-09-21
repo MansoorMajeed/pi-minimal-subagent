@@ -12,8 +12,6 @@ import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { resolveAgentRuntimeOptions } from "./agent-options.ts";
 
-export { DEFAULT_MAX_TURNS } from "./agent-options.ts";
-
 export interface AgentConfig {
 	name: string;
 	description: string;
@@ -22,7 +20,8 @@ export interface AgentConfig {
 	tools?: string[];
 	extensions?: string[];
 	inheritProjectContext: boolean;
-	maxTurns: number;
+	maxTurns?: number;
+	timeoutMs: number;
 	systemPrompt: string;
 	systemPromptMode?: "append" | "replace";
 	source: "bundled" | "user" | "project";

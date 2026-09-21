@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { MAX_INLINE_ANSWER_BYTES, MAX_INLINE_ERROR_BYTES, runSubagent, spillLargeAnswer } from "../src/spawn.ts";
+import { buildStatusRows } from "../src/status-layout.ts";
 
 function fakePi(dir: string, body: string): string {
 	const binDir = path.join(dir, "bin");
@@ -52,8 +53,30 @@ test("runSubagent reports and reaps a timed-out child", { concurrency: false }, 
 		assert.equal(result.ok, false);
 		assert.equal(result.timedOut, true);
 		assert.equal(result.activity.state, "timed_out");
+		assert.ok(result.activity.startedAt !== undefined);
+		assert.ok(result.activity.endedAt! >= result.activity.startedAt!);
+		assert.equal(result.activity.deadlineAt, result.activity.startedAt! + 30);
 	} finally {
 		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a child aborted before launch has no runtime or deadline", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const controller = new AbortController();
+	controller.abort();
+	try {
+		const result = await runSubagent({
+			...baseOptions(dir),
+			signal: controller.signal,
+			now: () => { throw new Error("clock read before launch"); },
+		});
+		assert.equal(result.error, "aborted");
+		assert.equal(result.activity.startedAt, undefined);
+		assert.equal(result.activity.deadlineAt, undefined);
+		assert.equal(result.activity.endedAt, undefined);
+	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
@@ -71,6 +94,8 @@ test("runSubagent reports and reaps an aborted child", { concurrency: false }, a
 		assert.equal(result.timedOut, false);
 		assert.equal(result.error, "aborted");
 		assert.equal(result.activity.state, "aborted");
+		assert.ok(result.activity.startedAt !== undefined);
+		assert.ok(result.activity.endedAt! >= result.activity.startedAt!);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -102,6 +127,56 @@ test("forced termination kills same-group descendants that ignore SIGTERM", { co
 		if (descendantPid) {
 			try { process.kill(descendantPid, "SIGKILL"); } catch { /* already dead */ }
 		}
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("agent_end does not freeze elapsed time before process settlement", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const message = {role:"assistant",content:[{type:"text",text:"done"}]};
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]}) + "\\n");
+		setTimeout(() => {}, 100);`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const times = [10_000, 15_000];
+	let beforeSettlement: any;
+	try {
+		const result = await runSubagent({
+			...baseOptions(dir),
+			now: () => times.shift()!,
+			onActivity: (activity) => {
+				if (activity.state === "done" && activity.endedAt === undefined) beforeSettlement = activity;
+			},
+		});
+		assert.ok(beforeSettlement);
+		assert.equal(buildStatusRows([beforeSettlement], 13_000)[2].text, "Elapsed 3s · timeout in 2s · 0 turns");
+		assert.equal(result.activity.endedAt, 15_000);
+		assert.equal(buildStatusRows([result.activity], 99_000)[2].text, "Elapsed 5s · 0 turns");
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("failed spawn does not invent child runtime", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const emptyBin = path.join(dir, "empty-bin");
+	fs.mkdirSync(emptyBin);
+	process.env.PATH = emptyBin;
+	try {
+		const result = await runSubagent({ ...baseOptions(dir), now: () => 10_000 });
+		assert.equal(result.ok, false);
+		assert.match(result.error!, /failed to spawn pi:.*ENOENT/);
+		assert.equal(result.activity.startedAt, undefined);
+		assert.equal(result.activity.deadlineAt, undefined);
+		assert.equal(result.activity.endedAt, undefined);
+		assert.equal(buildStatusRows([result.activity], 20_000)[2].text, "Not started · 0 turns");
+	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
@@ -174,6 +249,102 @@ test("runSubagent maps extension and project-context controls to exact Pi flags"
 	}
 });
 
+test("omitting maxTurns allows more than 50 assistant turns to finish naturally", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const emit = (x) => process.stdout.write(JSON.stringify(x) + "\\n");
+		for (let i = 1; i <= 51; i++) {
+			emit({type:"turn_start",turnIndex:i - 1});
+			emit({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"answer " + i}]}});
+		}
+		emit({type:"agent_end",messages:[{role:"assistant",content:[{type:"text",text:"answer 51"}]}]});`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const result = await runSubagent(baseOptions(dir));
+		assert.equal(result.ok, true);
+		assert.equal(result.turnLimitExceeded, false);
+		assert.equal(result.answer, "answer 51");
+		assert.equal(result.usage.turns, 51);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("launch guidance preserves the task and describes timeout and optional turn cap", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const fs = require("node:fs");
+		const args = process.argv.slice(2);
+		const promptFlag = args.indexOf("--system-prompt");
+		const text = JSON.stringify({args, prompt: promptFlag >= 0 ? fs.readFileSync(args[promptFlag + 1], "utf8") : null});
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[{role:"assistant",content:[{type:"text",text}]}]}) + "\\n");`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const uncapped = JSON.parse((await runSubagent({ ...baseOptions(dir), task: "keep this exact task" })).answer);
+		const uncappedTask = uncapped.args.at(-1);
+		assert.match(uncappedTask, /^Task: keep this exact task\n\nRuntime limits:/);
+		assert.match(uncappedTask, /5000 ms/);
+		assert.match(uncappedTask, /Absolute UTC deadline: \d{4}-\d{2}-\d{2}T/);
+		assert.match(uncappedTask, /Progress: <completed milestone; next step or blocker>/);
+		assert.doesNotMatch(uncappedTask, /turn cap/i);
+		assert.equal(uncapped.args.includes("--system-prompt"), false);
+
+		const capped = JSON.parse((await runSubagent({
+			...baseOptions(dir),
+			task: "replace-mode task",
+			maxTurns: 12,
+			systemPrompt: "Replacement prompt",
+			systemPromptMode: "replace",
+		})).answer);
+		assert.equal(capped.prompt, "Replacement prompt");
+		assert.match(capped.args.at(-1), /^Task: replace-mode task\n\nRuntime limits:/);
+		assert.match(capped.args.at(-1), /Turn cap: 12 completed assistant turns/);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("runner snapshots preserve task identity and freeze lifecycle timing", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(
+		dir,
+		`const message = {role:"assistant",content:[{type:"text",text:"Progress: implementation done; verify next"}]};
+		process.stdout.write(JSON.stringify({type:"message_end",message}) + "\\n");
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]}) + "\\n");`,
+	);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const times = [10_000, 10_750];
+	try {
+		const result = await runSubagent({
+			...baseOptions(dir),
+			task: "Implement refresh-token rotation",
+			goal: "Refresh tokens",
+			maxTurns: 80,
+			now: () => times.shift()!,
+		});
+		assert.equal(result.ok, true);
+		assert.equal(result.activity.task, "Implement refresh-token rotation");
+		assert.equal(result.activity.goal, "Refresh tokens");
+		assert.equal(result.activity.reported, "implementation done; verify next");
+		assert.equal(result.activity.startedAt, 10_000);
+		assert.equal(result.activity.deadlineAt, 15_000);
+		assert.equal(result.activity.endedAt, 10_750);
+		assert.equal(result.activity.maxTurns, 80);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("turn limit stops before the next turn and retains the last answer", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
 	const oldPath = process.env.PATH;
@@ -193,6 +364,7 @@ test("turn limit stops before the next turn and retains the last answer", { conc
 		assert.equal(result.turnLimitExceeded, true);
 		assert.equal(result.answer, "answer 2");
 		assert.equal(result.activity.state, "turn_limit");
+		assert.ok(result.activity.endedAt! >= result.activity.startedAt!);
 		assert.deepEqual(result.activity.recent, ["queued", "starting", "answer 1", "answer 2", "turn limit reached (2)"]);
 	} finally {
 		process.env.PATH = oldPath;
@@ -386,6 +558,7 @@ test("failed children without stderr report their exit status", { concurrency: f
 	try {
 		const result = await runSubagent(baseOptions(dir));
 		assert.equal(result.error, "exited with status 7");
+		assert.ok(result.activity.endedAt! >= result.activity.startedAt!);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });

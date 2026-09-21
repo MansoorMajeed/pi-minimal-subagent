@@ -7,9 +7,13 @@ function activity(overrides: Partial<ChildActivity> = {}): ChildActivity {
 	return {
 		agent: "scout",
 		model: "anthropic/claude-sonnet-4",
+		task: "Inspect the authentication flow in full detail",
+		goal: "Map auth flow",
 		state: "running",
 		current: "read src/index.ts",
 		recent: ["queued", "starting", "read src/index.ts"],
+		startedAt: 1_000,
+		deadlineAt: 1_801_000,
 		usage: {
 			input: 100,
 			output: 20,
@@ -24,82 +28,92 @@ function activity(overrides: Partial<ChildActivity> = {}): ChildActivity {
 	};
 }
 
-test("status layout always emits a header and five activity rows", () => {
-	const rows = buildStatusRows([activity()]);
+test("running status uses the exact six-row goal, timing, report, and activity contract", () => {
+	const rows = buildStatusRows([activity({ reported: "mapped middleware; inspect token refresh next" })], 193_000);
 
 	assert.equal(rows.length, 6);
-	assert.deepEqual(rows[0], {
-		kind: "header",
-		agent: "scout",
-		model: "anthropic/claude-sonnet-4",
-		state: "running",
-		usage: "[2 turns · 1,234 tok · $0.0123]",
-	});
-	assert.deepEqual(rows.slice(1), [
-		{ kind: "detail", text: "", historical: true },
-		{ kind: "detail", text: "", historical: true },
-		{ kind: "detail", text: "queued", historical: true },
+	assert.deepEqual(rows, [
+		{
+			kind: "header",
+			agent: "scout",
+			model: "anthropic/claude-sonnet-4",
+			state: "running",
+			usage: "[1,234 tok · $0.0123]",
+		},
+		{ kind: "detail", text: "Goal: Map auth flow", historical: false },
+		{ kind: "detail", text: "Elapsed 3m 12s · timeout in 26m 48s · 2 turns", historical: false },
+		{ kind: "detail", text: "Reported: mapped middleware; inspect token refresh next", historical: false },
 		{ kind: "detail", text: "starting", historical: true },
 		{ kind: "detail", text: "read src/index.ts", historical: true },
 	]);
 });
 
-test("status layout pads missing history above and anchors newest activity at the bottom", () => {
-	const rows = buildStatusRows([activity({ recent: ["read README.md"] })]);
+test("queued children show no invented runtime and no report", () => {
+	const rows = buildStatusRows([
+		activity({ state: "queued", startedAt: undefined, deadlineAt: undefined, recent: ["queued"], usage: { ...activity().usage, turns: 0 } }),
+	], 500_000);
 
-	assert.equal(rows.length, 6);
-	assert.equal(rows[0].kind, "header");
 	assert.deepEqual(rows.slice(1), [
+		{ kind: "detail", text: "Goal: Map auth flow", historical: false },
+		{ kind: "detail", text: "Queued", historical: false },
+		{ kind: "detail", text: "Reported: no update yet", historical: false },
 		{ kind: "detail", text: "", historical: true },
-		{ kind: "detail", text: "", historical: true },
-		{ kind: "detail", text: "", historical: true },
+		{ kind: "detail", text: "queued", historical: true },
+	]);
+});
+
+test("terminal-looking states keep advancing until runner settlement", () => {
+	for (const state of ["done", "turn_limit"] as const) {
+		const rows = buildStatusRows([activity({ state, endedAt: undefined, deadlineAt: 31_000 })], 13_000);
+		assert.deepEqual(rows[2], {
+			kind: "detail",
+			text: "Elapsed 12s · timeout in 18s · 2 turns",
+			historical: false,
+		});
+	}
+});
+
+test("terminal elapsed time freezes and explicit turn caps appear only when configured", () => {
+	const terminal = buildStatusRows([
+		activity({ state: "done", startedAt: 1_000, endedAt: 13_000, deadlineAt: 31_000, maxTurns: 80, recent: ["final", "done"] }),
+	], 999_000);
+	assert.deepEqual(terminal[2], { kind: "detail", text: "Elapsed 12s · 2/80 turns", historical: false });
+
+	const uncapped = buildStatusRows([activity()], 2_000);
+	assert.deepEqual(uncapped[2], { kind: "detail", text: "Elapsed 1s · timeout in 29m 59s · 2 turns", historical: false });
+});
+
+test("running timeout countdown clamps at zero", () => {
+	const rows = buildStatusRows([activity({ deadlineAt: 2_000 })], 3_000);
+	assert.deepEqual(rows[2], { kind: "detail", text: "Elapsed 2s · timeout in 0s · 2 turns", historical: false });
+});
+
+test("a never-launched failure does not invent elapsed time", () => {
+	const rows = buildStatusRows([activity({ state: "failed", startedAt: undefined, endedAt: undefined })], 5_000);
+	assert.deepEqual(rows[2], { kind: "detail", text: "Not started · 2 turns", historical: false });
+});
+
+test("activity tail pads above and keeps the latest two entries in chronological order", () => {
+	const one = buildStatusRows([activity({ recent: ["read README.md"] })], 2_000);
+	assert.deepEqual(one.slice(4), [
 		{ kind: "detail", text: "", historical: true },
 		{ kind: "detail", text: "read README.md", historical: true },
 	]);
-});
 
-test("status layout keeps only the latest five activity entries", () => {
-	const rows = buildStatusRows([
-		activity({ recent: ["queued", "starting", "read a.ts", "read b.ts", "read c.ts", "read d.ts"] }),
-	]);
-
-	assert.deepEqual(rows.slice(1), [
-		{ kind: "detail", text: "starting", historical: true },
+	const many = buildStatusRows([activity({ recent: ["queued", "starting", "read a.ts", "read b.ts"] })], 2_000);
+	assert.deepEqual(many.slice(4), [
 		{ kind: "detail", text: "read a.ts", historical: true },
 		{ kind: "detail", text: "read b.ts", historical: true },
-		{ kind: "detail", text: "read c.ts", historical: true },
-		{ kind: "detail", text: "read d.ts", historical: true },
 	]);
 });
 
-test("multiple children preserve order and fixed row counts", () => {
-	const activities = [
+test("multiple children preserve order and six rows each", () => {
+	const rows = buildStatusRows([
 		activity({ agent: "scout" }),
-		activity({ agent: "reviewer", state: "done", current: "done", recent: ["done"] }),
-	];
-
-	const rows = buildStatusRows(activities);
+		activity({ agent: "reviewer", state: "done", endedAt: 2_000, recent: ["done"] }),
+	], 2_000);
 	assert.equal(rows.length, 12);
 	assert.deepEqual(rows.filter((row) => row.kind === "header").map((row) => row.agent), ["scout", "reviewer"]);
-});
-
-test("absent usage does not add an empty accounting label", () => {
-	const rows = buildStatusRows([
-		activity({
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, contextTokens: 0, cost: 0, turns: 0 },
-		}),
-	]);
-
-	assert.equal(rows[0].kind, "header");
-	assert.equal(rows[0].usage, "");
-});
-
-test("legacy activities without model metadata retain the six-row layout", () => {
-	const rows = buildStatusRows([activity({ model: undefined })]);
-
-	assert.equal(rows.length, 6);
-	assert.equal(rows[0].kind, "header");
-	assert.equal(rows[0].model, undefined);
 });
 
 test("status display text collapses multiline and terminal-controlled values", () => {
