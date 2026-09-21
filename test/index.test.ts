@@ -367,7 +367,7 @@ test("background completion delivers one goal-attributed follow-up while blockin
 	const oldPath = process.env.PATH;
 	const binDir = fakePi(dir, `const task=process.argv.at(-1); if(task.includes("long")) setInterval(()=>{},1000); else { const text=task.includes("failure")?"":"answer"; const message={role:"assistant",content:text?[{type:"text",text}]:[]}; process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"); process.exit(task.includes("failure")?1:0); }`);
 	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
-	const ctx = { cwd: harnessDir, mode: "tui", modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "delivery-session" }, ui: { setWidget() {} } };
+	const ctx = { cwd: harnessDir, mode: "tui", modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "delivery-session" }, isIdle: () => true, ui: { setWidget() {} } };
 	try {
 		const { tool, handlers, messages, renderers } = registeredRuntime();
 		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
@@ -400,12 +400,56 @@ test("background completion delivers one goal-attributed follow-up while blockin
 	}
 });
 
+test("busy completions wait for agent settlement and shutdown wins the deferred delivery race", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-pending-delivery-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"done"}]}; setTimeout(()=>process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"),20);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	let idle = false;
+	const ctx = {
+		cwd: harnessDir,
+		mode: "tui",
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "pending-session" },
+		isIdle: () => idle,
+		ui: { setWidget() {} },
+	};
+	try {
+		const escaped = registeredRuntime();
+		await escaped.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const retained = await escaped.tool.execute("escape", { tasks: [{ agent: "worker", task: "complete while busy" }] }, undefined, undefined, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(escaped.messages.length, 0);
+		assert.match((await escaped.tool.execute("status", { action: "status", id: retained.details.jobId }, undefined, undefined, ctx)).content[0].text, /terminal/i);
+		idle = true;
+		await escaped.handlers.get("agent_settled")?.[0]?.({}, ctx);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(escaped.messages.length, 1);
+		await escaped.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+
+		idle = false;
+		const replaced = registeredRuntime();
+		await replaced.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		await replaced.tool.execute("replace", { tasks: [{ agent: "worker", task: "pending before replacement" }] }, undefined, undefined, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(replaced.messages.length, 0);
+		idle = true;
+		await replaced.handlers.get("agent_settled")?.[0]?.({}, ctx);
+		await replaced.handlers.get("session_shutdown")?.[0]?.({ reason: "new" }, ctx);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(replaced.messages.length, 0);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("an accepted background job ignores its tool signal but old-owner shutdown suppresses delivery", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-owner-"));
 	const oldPath = process.env.PATH;
 	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"done"}]}; setTimeout(()=>process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"),60);`);
 	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
-	const ctx = { cwd: harnessDir, mode: "tui", modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "owner-session" }, ui: { setWidget() {} } };
+	const ctx = { cwd: harnessDir, mode: "tui", modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "owner-session" }, isIdle: () => true, ui: { setWidget() {} } };
 	try {
 		const first = registeredRuntime();
 		await first.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
@@ -515,6 +559,7 @@ test("background progress keeps repainting the mounted widget after the receipt 
 	try {
 		const runtime = registeredRuntime();
 		await runtime.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		(ctx as any).isIdle = () => true;
 		const receipt = await runtime.tool.execute("widget", { tasks: [{ agent: "worker", task: "widget work" }] }, undefined, () => { toolUpdates++; }, ctx);
 		assert.match(receipt.content[0].text, /background/i);
 		assert.equal(widgets.length, 1);

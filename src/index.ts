@@ -81,16 +81,69 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	let sessionId: string | undefined;
 	let completionSubmitted = new Set<string>();
 	let deliveryErrors = new Map<string, string>();
+	let pendingDeliveries = new Map<string, {
+		jobs: JobRegistry;
+		generation: number;
+		sessionId: string | undefined;
+		handle: JobHandle;
+		results: SubagentResult[];
+		runDir: string;
+	}>();
+	let deliveryCheck: ReturnType<typeof setImmediate> | undefined;
+	let runtimeContext: any;
 	let backgroundUI: BackgroundUI | undefined;
 	let unsubscribeBackground: (() => void) | undefined;
 
+	const flushPendingDeliveries = () => {
+		if (!runtimeAlive || runtimeContext?.isIdle?.() !== true) return;
+		for (const [id, pending] of pendingDeliveries) {
+			const snapshot = pending.handle.snapshot();
+			if (
+				!runtimeAlive || jobs !== pending.jobs || generation !== pending.generation ||
+				sessionId !== pending.sessionId || snapshot.cancelRequested || completionSubmitted.has(id)
+			) {
+				pendingDeliveries.delete(id);
+				continue;
+			}
+			if (runtimeContext?.isIdle?.() !== true) return;
+			pendingDeliveries.delete(id);
+			completionSubmitted.add(id);
+			const goals = snapshot.activities.map((activity, index) => `[${index + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
+			try {
+				pi.sendMessage(
+					{
+						customType: "minimal-subagent-complete",
+						content: `Background subagent job ${id} completed.\nOriginal goals:\n${goals}\n\n${summarize(pending.results)}`,
+						display: true,
+						details: { runDir: pending.runDir, jobId: id, state: snapshot.state, activities: snapshot.activities, results: pending.results } satisfies SubagentDetails,
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			} catch (error) {
+				deliveryErrors.set(id, error instanceof Error ? error.message : String(error));
+			}
+		}
+	};
+	const scheduleDeliveryCheck = () => {
+		if (deliveryCheck !== undefined) return;
+		const scheduledGeneration = generation;
+		deliveryCheck = setImmediate(() => {
+			deliveryCheck = undefined;
+			if (generation === scheduledGeneration) flushPendingDeliveries();
+		});
+	};
+
 	pi.on("session_start", (_event, ctx) => {
+		if (deliveryCheck !== undefined) clearImmediate(deliveryCheck);
+		deliveryCheck = undefined;
 		jobs = new JobRegistry();
 		generation++;
 		runtimeAlive = true;
+		runtimeContext = ctx;
 		sessionId = ctx.sessionManager.getSessionId();
 		completionSubmitted = new Set();
 		deliveryErrors = new Map();
+		pendingDeliveries = new Map();
 		if (ctx.mode === "tui" && typeof ctx.ui.setWidget === "function") {
 			backgroundUI = new BackgroundUI(ctx.ui);
 			const ownedJobs = jobs;
@@ -108,8 +161,15 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	};
 	pi.on("session_before_switch", confirmReplacement);
 	pi.on("session_before_fork", confirmReplacement);
+	pi.on("agent_settled", () => {
+		scheduleDeliveryCheck();
+	});
 	pi.on("session_shutdown", async () => {
+		pendingDeliveries.clear();
+		if (deliveryCheck !== undefined) clearImmediate(deliveryCheck);
+		deliveryCheck = undefined;
 		runtimeAlive = false;
+		runtimeContext = undefined;
 		unsubscribeBackground?.();
 		unsubscribeBackground = undefined;
 		backgroundUI?.dispose();
@@ -291,29 +351,21 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const acceptedJobs = jobs;
 				const acceptedGeneration = generation;
 				const acceptedSessionId = sessionId;
-				const submitted = completionSubmitted;
-				const errors = deliveryErrors;
 				void handle.completion.then((results) => {
 					const snapshot = handle.snapshot();
 					if (
 						!runtimeAlive || jobs !== acceptedJobs || generation !== acceptedGeneration ||
-						sessionId !== acceptedSessionId || snapshot.cancelRequested || submitted.has(runId)
+						sessionId !== acceptedSessionId || snapshot.cancelRequested || completionSubmitted.has(runId)
 					) return;
-					submitted.add(runId);
-					const goals = snapshot.activities.map((activity, index) => `[${index + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
-					try {
-						pi.sendMessage(
-							{
-								customType: "minimal-subagent-complete",
-								content: `Background subagent job ${runId} completed.\nOriginal goals:\n${goals}\n\n${summarize(results)}`,
-								display: true,
-								details: { runDir, jobId: runId, state: snapshot.state, activities: snapshot.activities, results } satisfies SubagentDetails,
-							},
-							{ deliverAs: "followUp", triggerTurn: true },
-						);
-					} catch (error) {
-						errors.set(runId, error instanceof Error ? error.message : String(error));
-					}
+					pendingDeliveries.set(runId, {
+						jobs: acceptedJobs,
+						generation: acceptedGeneration,
+						sessionId: acceptedSessionId,
+						handle,
+						results,
+						runDir,
+					});
+					scheduleDeliveryCheck();
 				});
 				const snapshot = handle.snapshot();
 				const goals = snapshot.activities.map((activity, index) => `[${index + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
