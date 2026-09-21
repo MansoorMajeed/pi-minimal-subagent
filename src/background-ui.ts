@@ -1,5 +1,5 @@
 import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { sanitizeTerminalText, type ChildActivity } from "./activity.ts";
+import { sanitizeTerminalText } from "./activity.ts";
 import type { JobSnapshot } from "./jobs.ts";
 import { SubagentStatusComponent } from "./status-render.ts";
 import { buildStatusRows } from "./status-layout.ts";
@@ -26,12 +26,16 @@ class BackgroundStatusComponent implements Component {
 		const running = all.filter(({ activity }) => activity.state === "running");
 		const queued = all.filter(({ activity }) => activity.state === "queued");
 		const shown = (running.length > 0 ? running : queued).slice(0, 2);
-		const ids = jobs.map((job) => sanitizeTerminalText(job.id).replace(/\s+/g, " ")).join(", ");
-		const header = `${running.length} run · ${queued.length} queued · ${ids}`;
+		const header = `${running.length} run · ${queued.length} queued`;
 		const lines = [truncateToWidth(this.theme.fg("dim", header), available, "…")];
+		let previousJobId: string | undefined;
 		for (const { job, activity } of shown) {
-			const withId: ChildActivity = { ...activity, agent: `${job.id} · ${activity.agent}` };
-			lines.push(...new SubagentStatusComponent(buildStatusRows([withId]), undefined, this.theme).render(available));
+			if (job.id !== previousJobId) {
+				const id = sanitizeTerminalText(job.id).replace(/\s+/g, " ");
+				lines.push(truncateToWidth(this.theme.fg("dim", `Job ${id}`), available, "…"));
+				previousJobId = job.id;
+			}
+			lines.push(...new SubagentStatusComponent(buildStatusRows([activity]), undefined, this.theme).render(available));
 		}
 		return lines;
 	}

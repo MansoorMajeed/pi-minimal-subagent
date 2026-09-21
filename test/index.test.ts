@@ -573,7 +573,7 @@ function widgetJob(id: string, states: Array<"queued" | "running" | "done">) {
 		state: states.every((state) => state === "done") ? "terminal" : states.includes("running") ? "running" : "queued",
 		cancelRequested: false,
 		activities: states.map((state, index) => {
-			const activity = createActivity(`worker-${id}-${index}\x1b[2J`, "test/model", { task: `task ${index}`, goal: `goal ${id} ${index}` });
+			const activity = createActivity(`worker-${index}\x1b[2J`, "test/model", { task: `task ${index}`, goal: `goal ${index}` });
 			activity.state = state;
 			activity.current = state;
 			activity.recent = [state];
@@ -607,9 +607,10 @@ test("background widget mounts once, repaints in place, bounds cards, and unmoun
 		let renders = 0;
 		const component = widgets[0][1]({ requestRender: () => { renders++; } }, fakeTheme());
 		const lines = component.render(36);
-		assert.equal(lines.length, 13);
-		assert.match(lines[0], /job-one/);
-		assert.match(lines[0], /1 queued/);
+		assert.equal(lines.length, 14);
+		assert.equal(lines[0], "3 run · 1 queued");
+		assert.equal(lines.filter((line: string) => line.includes("job-one")).length, 1);
+		assert.equal(lines.some((line: string) => line.includes("job-two")), false);
 		assert.ok(lines.every((line: string) => visibleWidth(line) <= 36));
 		assert.ok(lines.every((line: string) => !line.includes("\x1b[2J")));
 		manager.update([widgetJob("job-one", ["done", "running"]), widgetJob("job-two", ["queued"])]);
@@ -632,6 +633,25 @@ test("background widget mounts once, repaints in place, bounds cards, and unmoun
 		globalThis.setInterval = realSetInterval;
 		globalThis.clearInterval = realClearInterval;
 	}
+});
+
+test("background widget groups displayed cards under one header per job", () => {
+	const widgets: any[] = [];
+	const manager = new BackgroundUI({ setWidget: (...args: any[]) => widgets.push(args) });
+	manager.update([widgetJob("job-one", ["running"]), widgetJob("job-two", ["running"])]);
+	const component = widgets[0][1]({ requestRender() {} }, fakeTheme());
+	const lines = component.render(80);
+
+	assert.equal(lines[0], "2 run · 0 queued");
+	assert.equal(lines.filter((line: string) => line.includes("job-one")).length, 1);
+	assert.equal(lines.filter((line: string) => line.includes("job-two")).length, 1);
+	const firstHeader = lines.findIndex((line: string) => line.includes("job-one"));
+	const firstCard = lines.findIndex((line: string) => line.includes("worker-0"));
+	const secondHeader = lines.findIndex((line: string) => line.includes("job-two"));
+	const secondCard = lines.findIndex((line: string, index: number) => index > firstCard && line.includes("worker-0"));
+	assert.ok(firstHeader < firstCard && firstCard < secondHeader && secondHeader < secondCard);
+	assert.equal(lines.length, 15);
+	manager.dispose();
 });
 
 test("background progress keeps repainting the mounted widget after the receipt without tool updates", { concurrency: false }, async () => {
@@ -680,7 +700,7 @@ test("queued widget cards appear only when no child is running and narrow render
 	manager.update([widgetJob("queued-a", ["queued", "queued", "queued"])]);
 	const component = widgets[0][1]({ requestRender() {} }, fakeTheme());
 	const lines = component.render(9);
-	assert.equal(lines.length, 13);
+	assert.equal(lines.length, 14);
 	assert.ok(lines.every((line: string) => visibleWidth(line) <= 9));
 	manager.dispose();
 });
