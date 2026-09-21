@@ -1,9 +1,10 @@
 # pi-minimal-subagent
 
 A deliberately small Pi extension: **one tool** that fans out focused child
-agents in parallel, streams compact activity inline, and returns their results.
-No chains, background jobs, wait tool, forked sessions, intercom, worktrees, or
-persistent child sessions — the parent stays the orchestrator.
+agents, keeps their progress visible, and returns aggregate results. In the TUI,
+delegation runs in the background by default so the parent remains available.
+There is no workflow engine, wait tool, intercom, worktree management, retry
+system, or persistent child session — the parent stays the orchestrator.
 
 If you need the full orchestration framework, use
 [`pi-subagents`](https://github.com/nicobailon/pi-subagents) instead.
@@ -26,8 +27,9 @@ Run two reviewers in parallel: one on correctness, one on test coverage.
 Use scout to map the auth flow while a researcher checks the upstream API docs.
 ```
 
-Sequential work needs no special syntax: Pi calls the tool again with the
-previous result included in the next task.
+Sequential work needs no workflow syntax: the parent receives an automatic
+completion, then calls the tool again with the relevant result included in the
+next self-contained task. It should not poll while waiting.
 
 ```ts
 subagent({
@@ -49,10 +51,48 @@ model-selection guidance.
 | `label` | Optional concise display goal; never replaces or modifies `task`. |
 | `model` | Optional per-task model override. |
 
-## Inline activity
+## Background execution and controls
 
-While a call is running, each child keeps a six-row status tail in any terminal
-or multiplexer:
+Interactive TUI calls run in the background unless `async: false` is explicit:
+
+```ts
+subagent({ tasks: [{ agent: "scout", task: "Map the auth flow" }] })
+subagent({ tasks: [{ agent: "reviewer", task: "Review the diff" }], async: false })
+subagent({ action: "status" })
+subagent({ action: "status", id: "<exact-job-id>" })
+subagent({ action: "cancel", id: "<exact-job-id>" })
+```
+
+The background receipt contains the exact job ID, goals, and artifact directory.
+Natural completion adds one aggregate follow-up after every child settles; it
+waits behind an in-progress parent response rather than steering it. Explicitly
+cancelled jobs do not send that follow-up; their partial results remain available
+through exact-ID status. The parent can continue
+independent work, or briefly acknowledge that work is underway and yield. Use the
+completion to start dependent work. A newer user message does not steer children,
+so redirect by cancelling, letting cancellation settle, and relaunching with
+updated self-contained instructions.
+
+| Pi mode | Omitted `async` | `async: true` | `async: false` |
+|---|---|---|---|
+| TUI | Background receipt | Background receipt | Blocking result |
+| Print / JSON / RPC | Blocking result | Rejected before launch | Blocking result |
+
+Only active background jobs appear in status without an ID. Exact-ID status also
+retains terminal results for the current session runtime. Cancellation is also
+available directly while the parent is busy:
+
+```text
+/subagent-cancel <exact-job-id>
+```
+
+Cancellation does not roll back file edits. Tasks in one call must be independent,
+and concurrent parent/child or child/child writes must own non-overlapping files
+unless external isolation is used.
+
+## Progress display
+
+Each child keeps the same six-row status tail in any terminal or multiplexer:
 
 ```text
 ● scout running model: anthropic/claude-haiku-4-5 [12,400 tok · $0.0310]
@@ -80,9 +120,12 @@ Children are instructed to emit sparse standalone
 `Progress: <completed milestone; next step or blocker>` lines. `Reported:` shows
 the latest such completed assistant message. This is self-reported, may be
 omitted or inaccurate, and does not imply a percentage or ETA. Observed tool
-activity remains separate. Updates come from the child's JSONL stream; one
-clock refresh per tool call advances timing during silence without adding model
-messages or transcript entries.
+activity remains separate. Updates come from the child's JSONL stream. Explicit blocking calls stream the
+cards inline. Background calls use one bounded widget above the editor, showing
+at most two running cards (or queued cards when none are running), job IDs, and
+overflow counts. One shared clock advances timing during silence without adding
+model messages or transcript entries, and the widget disappears when no
+background work remains.
 
 There is no split-pane observer or `observe` parameter.
 
@@ -214,8 +257,17 @@ safe without those guards.
   cap in the task message. Deadline awareness and a pre-deadline handoff are
   best effort: there is no guaranteed warning, checkpoint, or safe interruption
   boundary. The existing hard timeout still terminates the process group.
-- The parent abort signal terminates the child's whole process group, with a
-  SIGKILL fallback.
+- For an explicit blocking call, the parent tool abort signal terminates the
+  child's whole process group, with a SIGKILL fallback. Once a background job is
+  accepted, Escape aborting an unrelated parent response does not cancel it.
+- `/new`, `/resume`, `/fork`, and `/clone` warn before replacement when jobs are
+  active. Committed replacement, `/reload`, and graceful exit cancel all
+  session-owned queued/running children and wait for process-group cleanup.
+  `/tree`, compaction, and model changes stay in the same runtime: jobs continue
+  and completion attaches to the current branch.
+- SIGKILL or a host crash cannot guarantee cleanup. Jobs are in-memory only and
+  do not survive reload/restart; if a queued completion is cleared, retrieve the
+  retained result with exact-ID status while that runtime still exists.
 - Child-derived terminal controls are stripped at the TUI boundary without
   changing the stored or model-facing answer.
 
@@ -237,7 +289,11 @@ child stderr diagnostics are capped at 4 KiB.
 
 `usage` aggregates provider-reported input, output, cache-read, cache-write,
 total/context tokens, cost, and assistant turns. Usage stays in details and TUI
-rendering rather than adding accounting prose to model context.
+rendering rather than adding accounting prose to model context. Blocking results
+store records on the `subagent` tool result. Background records are stored on the
+`minimal-subagent-complete` custom message's `details.results`; stats consumers
+that only scan tool results must recognize that custom message without counting
+both views.
 
 Run artifacts live under `$TMPDIR/pi-minsub/<run>/` and include one JSONL event
 log per child plus any spilled Markdown output.
@@ -246,9 +302,10 @@ log per child plus any spilled Markdown output.
 
 Each child is a headless `pi --print --mode json --no-session` process. The
 parent incrementally parses stdout, tees it to a JSONL log, derives activity and
-usage, and extracts the last assistant message. Calls remain synchronous: the
-parent tool returns only after every child completes, fails, times out, or hits
-its turn limit.
+usage, and extracts the last assistant message. One session-local FIFO scheduler
+shares four active child slots across blocking and background calls; receipts do
+not wait for a slot. Results preserve original task order. Background state is
+not restored after session replacement or process restart.
 
 ## Development
 

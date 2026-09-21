@@ -47,7 +47,7 @@ function formatTurns(activity: ChildActivity): string {
 		: `${turns}/${activity.maxTurns} turns`;
 }
 
-function timingText(activity: ChildActivity, now: number): string {
+export function activityTimingText(activity: ChildActivity, now = Date.now()): string {
 	if (activity.state === "queued") return "Queued";
 	if (activity.startedAt === undefined) return `Not started · ${formatTurns(activity)}`;
 	if (activity.endedAt === undefined) {
@@ -68,7 +68,7 @@ export function buildStatusRows(activities: ChildActivity[], now = Date.now()): 
 			usage: formatUsage(activity.usage),
 		});
 		rows.push({ kind: "detail", text: `Goal: ${singleLineStatusText(activity.goal)}`, historical: false });
-		rows.push({ kind: "detail", text: timingText(activity, now), historical: false });
+		rows.push({ kind: "detail", text: activityTimingText(activity, now), historical: false });
 		rows.push({
 			kind: "detail",
 			text: `Reported: ${activity.reported ? singleLineStatusText(activity.reported) : "no update yet"}`,

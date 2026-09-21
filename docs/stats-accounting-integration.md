@@ -2,35 +2,47 @@
 
 `pi-minimal-subagent` runs child agents as separate `pi --print --mode json --no-session` processes. Their provider calls are billed independently, but their assistant messages are not persisted as native assistant messages in the parent session. A stats consumer that only sums parent `AssistantMessage.usage` therefore misses child usage.
 
-The extension currently preserves recoverable child usage in the parent `subagent` tool result. This is enough for combined cost and token totals, but not enough for reliable model attribution, exact daily attribution, completeness reporting, or correlation with telemetry emitted inside child processes.
+The extension currently preserves recoverable child usage in two parent-session locations: finalized `subagent` tool results (blocking execution and terminal status/cancel results) and background `minimal-subagent-complete` custom messages. These records are enough for combined cost and token totals, but not enough for reliable model attribution, exact daily attribution, completeness reporting, or correlation with telemetry emitted inside child processes.
 
 ## Current Consumer Contract
 
-A parent-session stats consumer should match finalized entries where:
+A parent-session stats consumer should match any finalized `subagent` tool result containing `details.results`:
 
 ```text
 entry.type == "message"
 entry.message.role == "toolResult"
 entry.message.toolName == "subagent"
+results = entry.message.details.results
 ```
 
-The canonical child records are:
+or finalized background completion messages:
 
 ```text
-entry.message.details.results[index]
-entry.message.details.results[index].usage
+entry.type == "custom_message"
+entry.customType == "minimal-subagent-complete"
+results = entry.details.results
 ```
 
-Consumers must not also sum:
+For either path, the canonical child accounting record is `results[index].usage`. Consumers must not also sum these copied display/status views:
 
 ```text
 details.activities[index].usage
 details.results[index].activity.usage
 ```
 
-Those are duplicate views of the same usage.
+They represent the same child usage as `details.results[index].usage`.
 
-Usage from failed, timed-out, aborted, or turn-limited children remains billable and should be counted whenever captured. `contextTokens` is a latest-context indicator and must not be added to cumulative totals. Older result shapes may omit `totalTokens`; consumers may fall back to the sum of the four reported token components when they are present.
+Deduplicate in two stages. First, collapse copied or forked parent history by the persisted entry ID; that identity only recognizes copies of the same entry. Then group canonical child records across all matched entries by:
+
+```text
+(details.jobId ?? details.runDir, result index)
+```
+
+Count one cumulative terminal result per run/task key. A naturally completed background job can persist the same final results in its completion message and in later exact-ID status or cancel tool results. Those entries have distinct persisted entry IDs, so entry-ID deduplication alone double-counts them. Prefer `jobId` when present, use `runDir` as the fallback for shapes without a job ID, and do not use agent name as task identity.
+
+Usage from failed, timed-out, aborted, cancelled, or turn-limited children remains billable and should be counted whenever captured. Cancellation suppresses the automatic background completion. Partial usage from a job cancelled through the tool can therefore exist only in that cancel result or a later terminal status result; deduplicate those snapshots by the same run/task key. The direct `/subagent-cancel` command only displays a notification and does not persist a result. If no later tool status call is made, a directly cancelled job has no recoverable result in the parent session.
+
+`contextTokens` is a latest-context indicator and must not be added to cumulative totals. Older result shapes may omit `totalTokens`; consumers may fall back to the sum of the four reported token components when they are present.
 
 The current details format is intentionally extension-specific but unversioned. Consumers must validate every level and tolerate missing fields.
 
@@ -131,14 +143,15 @@ Direct child telemetry and parent-result ingestion are two views of the same cal
 A durable stats integration should:
 
 1. Use only `details.results[index].usage` for the legacy schema, or `results[index].accounting` for the versioned schema.
-2. Deduplicate copied parent session history using the persisted tool-result entry identity plus result index. Forked or cloned session files can contain the same historical entry more than once.
-3. Count all executed branches for financial spend; abandoning a branch does not undo provider billing.
-4. Include failed child usage when present.
-5. Keep parent/native, child/subagent, and combined totals separately visible.
-6. Never infer a child model from the parent model or from task arguments alone.
-7. Treat absent usage as unknown, not zero, when evidence shows a child assistant turn occurred.
-8. Ignore `contextTokens` when summing cumulative tokens.
-9. Avoid using temporary child JSONL artifacts as the only durable accounting source.
+2. Deduplicate copies of the same persisted entry by entry ID.
+3. Across distinct tool-result and custom-message entries, count one cumulative terminal record per `(details.jobId ?? details.runDir, result index)` key.
+4. Count all executed branches for financial spend; abandoning a branch does not undo provider billing.
+5. Include failed or cancelled child usage when present.
+6. Keep parent/native, child/subagent, and combined totals separately visible.
+7. Never infer a child model from the parent model or from task arguments alone.
+8. Treat absent usage as unknown, not zero, when evidence shows a child assistant turn occurred.
+9. Ignore `contextTokens` when summing cumulative tokens.
+10. Avoid using temporary child JSONL artifacts as the only durable accounting source.
 
 ## Backward Compatibility
 
@@ -163,7 +176,9 @@ Add tests covering:
 - per-day aggregation across a UTC boundary;
 - parent/session/tool/run correlation propagation into child environments;
 - legacy and versioned result views generated from the same accumulator;
-- consumers choosing the versioned view without also counting legacy or activity copies.
+- consumers choosing the versioned view without also counting legacy or activity copies;
+- repeated completion, terminal status, and cancel snapshots with distinct entry IDs but the same run/task keys;
+- cancelled background jobs whose partial usage exists only in a cancel or later status tool result.
 
 ## Privacy
 

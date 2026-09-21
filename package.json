@@ -1,7 +1,7 @@
 {
   "name": "pi-minimal-subagent",
   "version": "0.1.0",
-  "description": "Minimal Pi extension for synchronous parallel child agents with inline activity",
+  "description": "Minimal Pi extension for session-local background child agents with live activity",
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "pi-extension", "pi", "subagent", "parallel"],
