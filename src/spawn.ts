@@ -329,14 +329,6 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				fs.writeFileSync(promptFile, opts.systemPrompt, { mode: 0o600 });
 				args.push(opts.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptFile);
 			}
-			const launchAt = now();
-			const deadlineAt = launchAt + opts.timeoutMs;
-			const deadline = new Date(deadlineAt).toISOString();
-			const turnGuidance = maxTurns === undefined ? "" : `\n- Turn cap: ${maxTurns} completed assistant turns.`;
-			args.push(
-				`Task: ${opts.task}\n\nRuntime limits:\n- Hard timeout: ${opts.timeoutMs} ms. Absolute UTC deadline: ${deadline}.${turnGuidance}\n- Before substantial work and at meaningful milestones, report one sparse factual line: Progress: <completed milestone; next step or blocker>.\n- If possible before the deadline, leave a concise handoff of completed work, verification, and remaining work. Finish with a normal final answer.`,
-			);
-
 			fs.mkdirSync(path.dirname(opts.logPath), { recursive: true });
 			logStream = fs.createWriteStream(opts.logPath, { flags: "w" });
 			// A stream error (ENOSPC/EACCES) would otherwise emit an unhandled
@@ -349,6 +341,14 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				settle(null, "aborted");
 				return;
 			}
+
+			const launchAt = now();
+			const deadlineAt = launchAt + opts.timeoutMs;
+			const deadline = new Date(deadlineAt).toISOString();
+			const turnGuidance = maxTurns === undefined ? "" : `\n- Turn cap: ${maxTurns} completed assistant turns.`;
+			args.push(
+				`Task: ${opts.task}\n\nRuntime limits:\n- Hard timeout: ${opts.timeoutMs} ms. Absolute UTC deadline: ${deadline}.${turnGuidance}\n- Before substantial work and at meaningful milestones, report one sparse factual line: Progress: <completed milestone; next step or blocker>.\n- If possible before the deadline, leave a concise handoff of completed work, verification, and remaining work. Finish with a normal final answer.`,
+			);
 
 			child = spawn("pi", args, {
 				cwd: opts.cwd,

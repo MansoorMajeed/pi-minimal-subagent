@@ -61,6 +61,25 @@ test("runSubagent reports and reaps a timed-out child", { concurrency: false }, 
 	}
 });
 
+test("a child aborted before launch has no runtime or deadline", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const controller = new AbortController();
+	controller.abort();
+	try {
+		const result = await runSubagent({
+			...baseOptions(dir),
+			signal: controller.signal,
+			now: () => { throw new Error("clock read before launch"); },
+		});
+		assert.equal(result.error, "aborted");
+		assert.equal(result.activity.startedAt, undefined);
+		assert.equal(result.activity.deadlineAt, undefined);
+		assert.equal(result.activity.endedAt, undefined);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("runSubagent reports and reaps an aborted child", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
 	const oldPath = process.env.PATH;
