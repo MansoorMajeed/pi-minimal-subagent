@@ -338,6 +338,72 @@ test("session replacement warns without cancelling until committed shutdown", { 
 	}
 });
 
+test("background completion delivers one goal-attributed follow-up while blocking calls and cancellation do not", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-delivery-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const task=process.argv.at(-1); if(task.includes("long")) setInterval(()=>{},1000); else { const text=task.includes("failure")?"":"answer"; const message={role:"assistant",content:text?[{type:"text",text}]:[]}; process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"); process.exit(task.includes("failure")?1:0); }`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = { cwd: harnessDir, mode: "tui", modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "delivery-session" }, ui: { setWidget() {} } };
+	try {
+		const { tool, handlers, messages, renderers } = registeredRuntime();
+		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const receipt = await tool.execute("deliver", { tasks: [
+			{ agent: "worker", label: "First goal", task: "first" },
+			{ agent: "scout", label: "Failure goal", task: "failure" },
+		] }, undefined, undefined, ctx);
+		for (let i = 0; i < 50 && messages.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(messages.length, 1);
+		assert.equal(messages[0].message.customType, "minimal-subagent-complete");
+		assert.equal(messages[0].message.display, true);
+		assert.deepEqual(messages[0].options, { deliverAs: "followUp", triggerTurn: true });
+		assert.match(messages[0].message.content, new RegExp(receipt.details.jobId));
+		assert.match(messages[0].message.content, /First goal/);
+		assert.match(messages[0].message.content, /Failure goal/);
+		assert.match(messages[0].message.content, /worker — ok[\s\S]*scout — FAILED/i);
+		assert.deepEqual(messages[0].message.details.results.map((item: any) => item.agent), ["worker", "scout"]);
+		assert.ok(renderers.has("minimal-subagent-complete"));
+
+		await tool.execute("blocking", { tasks: [{ agent: "worker", task: "blocking" }], async: false }, undefined, undefined, ctx);
+		assert.equal(messages.length, 1);
+		const cancelled = await tool.execute("cancelled", { tasks: [{ agent: "worker", task: "long" }] }, undefined, undefined, ctx);
+		await tool.execute("cancel", { action: "cancel", id: cancelled.details.jobId }, undefined, undefined, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(messages.length, 1);
+		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("an accepted background job ignores its tool signal but old-owner shutdown suppresses delivery", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-owner-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"done"}]}; setTimeout(()=>process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"),60);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = { cwd: harnessDir, mode: "tui", modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "owner-session" }, ui: { setWidget() {} } };
+	try {
+		const first = registeredRuntime();
+		await first.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const controller = new AbortController();
+		const receipt = await first.tool.execute("survive", { tasks: [{ agent: "worker", task: "survive" }] }, controller.signal, undefined, ctx);
+		controller.abort();
+		for (let i = 0; i < 50 && first.messages.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(first.messages.length, 1);
+		assert.match((await first.tool.execute("status", { action: "status", id: receipt.details.jobId }, undefined, undefined, ctx)).content[0].text, /terminal/i);
+
+		const old = await first.tool.execute("old", { tasks: [{ agent: "worker", task: "survive" }] }, undefined, undefined, ctx);
+		await first.handlers.get("session_shutdown")?.[0]?.({ reason: "reload" }, ctx);
+		await first.handlers.get("session_start")?.[0]?.({ reason: "reload" }, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(first.messages.length, 1);
+		await assert.rejects(() => first.tool.execute("gone", { action: "status", id: old.details.jobId }, undefined, undefined, ctx), /Unknown/);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("tool wiring preserves labeled task metadata, refreshes the clock, and clears its timer", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-index-test-"));
 	const oldPath = process.env.PATH;

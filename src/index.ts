@@ -122,9 +122,19 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	if (isMinimalSubagentChild()) return;
 
 	let jobs = new JobRegistry();
+	let generation = 0;
+	let runtimeAlive = false;
+	let sessionId: string | undefined;
+	let completionSubmitted = new Set<string>();
+	let deliveryErrors = new Map<string, string>();
 
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
 		jobs = new JobRegistry();
+		generation++;
+		runtimeAlive = true;
+		sessionId = ctx.sessionManager.getSessionId();
+		completionSubmitted = new Set();
+		deliveryErrors = new Map();
 	});
 	const confirmReplacement = async (_event: unknown, ctx: any) => {
 		const count = jobs.listActiveBackground().length;
@@ -138,6 +148,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	pi.on("session_before_switch", confirmReplacement);
 	pi.on("session_before_fork", confirmReplacement);
 	pi.on("session_shutdown", async () => {
+		runtimeAlive = false;
 		await jobs.dispose();
 	});
 	pi.registerCommand("subagent-cancel", {
@@ -155,6 +166,14 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
 		},
+	});
+	pi.registerMessageRenderer("minimal-subagent-complete", (message: any, { expanded }: any, theme: any) => {
+		const details = message.details as SubagentDetails | undefined;
+		const id = details?.jobId ?? "unknown";
+		if (!expanded || !details?.activities?.length) {
+			return new Text(`${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold(`subagent ${id}`))} ${theme.fg("dim", details?.state ?? "complete")}`, 0, 0);
+		}
+		return new SubagentStatusComponent(buildStatusRows(details.activities), summarize(details.results ?? []), theme);
 	});
 
 	pi.registerTool({
@@ -186,8 +205,10 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				if (params.id) {
 					const snapshot = jobs.get(params.id);
 					if (!snapshot) throw new Error(`Unknown subagent job id: ${params.id}`);
+					const deliveryError = deliveryErrors.get(params.id);
+					const text = jobStatusText(snapshot) + (deliveryError ? `\nCompletion delivery failed: ${deliveryError}` : "");
 					return {
-						content: [{ type: "text" as const, text: boundedText(jobStatusText(snapshot)) }],
+						content: [{ type: "text" as const, text: boundedText(text) }],
 						details: { runDir: snapshot.runDir, jobId: snapshot.id, state: snapshot.state, activities: snapshot.activities, results: snapshot.results } satisfies SubagentDetails,
 					};
 				}
@@ -302,6 +323,33 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				})),
 			});
 			if (background) {
+				const acceptedJobs = jobs;
+				const acceptedGeneration = generation;
+				const acceptedSessionId = sessionId;
+				const submitted = completionSubmitted;
+				const errors = deliveryErrors;
+				void handle.completion.then((results) => {
+					const snapshot = handle.snapshot();
+					if (
+						!runtimeAlive || jobs !== acceptedJobs || generation !== acceptedGeneration ||
+						sessionId !== acceptedSessionId || snapshot.cancelRequested || submitted.has(runId)
+					) return;
+					submitted.add(runId);
+					const goals = snapshot.activities.map((activity, index) => `[${index + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
+					try {
+						pi.sendMessage(
+							{
+								customType: "minimal-subagent-complete",
+								content: `Background subagent job ${runId} completed.\nOriginal goals:\n${goals}\n\n${summarize(results)}`,
+								display: true,
+								details: { runDir, jobId: runId, state: snapshot.state, activities: snapshot.activities, results } satisfies SubagentDetails,
+							},
+							{ deliverAs: "followUp", triggerTurn: true },
+						);
+					} catch (error) {
+						errors.set(runId, error instanceof Error ? error.message : String(error));
+					}
+				});
 				const snapshot = handle.snapshot();
 				const goals = snapshot.activities.map((activity, index) => `[${index + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
 				return {
