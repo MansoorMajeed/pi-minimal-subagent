@@ -26,7 +26,7 @@ const MAX_TASKS = 8;
 
 const ToolParams = Type.Object({
 	action: Type.Optional(
-		Type.String({ description: "'list': agents and model guidance. 'models': search available models with query. Omit to run tasks." }),
+		Type.String({ description: "'list': agents/guidance. 'models': model search. 'status'/'cancel': exact-ID background controls. Omit to run tasks." }),
 	),
 	query: Type.Optional(Type.String({ description: "Required for 'models': name or provider/model ID substring (e.g. 'luna'); at most 50 matches.", minLength: 1 })),
 	async: Type.Optional(Type.Boolean({ description: "TUI only: background execution. Defaults true in TUI and false elsewhere; false always blocks." })),
