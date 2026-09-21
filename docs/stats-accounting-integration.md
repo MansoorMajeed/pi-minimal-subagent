@@ -2,33 +2,35 @@
 
 `pi-minimal-subagent` runs child agents as separate `pi --print --mode json --no-session` processes. Their provider calls are billed independently, but their assistant messages are not persisted as native assistant messages in the parent session. A stats consumer that only sums parent `AssistantMessage.usage` therefore misses child usage.
 
-The extension currently preserves recoverable child usage in the parent `subagent` tool result. This is enough for combined cost and token totals, but not enough for reliable model attribution, exact daily attribution, completeness reporting, or correlation with telemetry emitted inside child processes.
+The extension currently preserves recoverable child usage in two parent-session locations: blocking calls use the `subagent` tool result, while background calls use the `minimal-subagent-complete` custom message. These records are enough for combined cost and token totals, but not enough for reliable model attribution, exact daily attribution, completeness reporting, or correlation with telemetry emitted inside child processes.
 
 ## Current Consumer Contract
 
-A parent-session stats consumer should match finalized entries where:
+A parent-session stats consumer should match either finalized blocking tool results:
 
 ```text
 entry.type == "message"
 entry.message.role == "toolResult"
 entry.message.toolName == "subagent"
+results = entry.message.details.results
 ```
 
-The canonical child records are:
+or finalized background completion messages:
 
 ```text
-entry.message.details.results[index]
-entry.message.details.results[index].usage
+entry.type == "custom_message"
+entry.customType == "minimal-subagent-complete"
+results = entry.details.results
 ```
 
-Consumers must not also sum:
+For either path, the canonical child accounting record is `results[index].usage`. Consumers must not also sum these copied display/status views:
 
 ```text
 details.activities[index].usage
 details.results[index].activity.usage
 ```
 
-Those are duplicate views of the same usage.
+They represent the same child usage as `details.results[index].usage`. Deduplicate copied or forked parent history by the same persisted entry ID and result index, regardless of whether the entry is a blocking tool result or background custom message.
 
 Usage from failed, timed-out, aborted, or turn-limited children remains billable and should be counted whenever captured. `contextTokens` is a latest-context indicator and must not be added to cumulative totals. Older result shapes may omit `totalTokens`; consumers may fall back to the sum of the four reported token components when they are present.
 
@@ -131,7 +133,7 @@ Direct child telemetry and parent-result ingestion are two views of the same cal
 A durable stats integration should:
 
 1. Use only `details.results[index].usage` for the legacy schema, or `results[index].accounting` for the versioned schema.
-2. Deduplicate copied parent session history using the persisted tool-result entry identity plus result index. Forked or cloned session files can contain the same historical entry more than once.
+2. Deduplicate copied parent session history using the persisted entry identity plus result index for both tool-result and custom-message records. Forked or cloned session files can contain the same historical entry more than once.
 3. Count all executed branches for financial spend; abandoning a branch does not undo provider billing.
 4. Include failed child usage when present.
 5. Keep parent/native, child/subagent, and combined totals separately visible.
