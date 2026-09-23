@@ -385,7 +385,10 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 			child.stderr?.on("data", (chunk: Buffer) => {
 				stderr += chunk.toString("utf-8");
 			});
-			child.on("error", (err) => settle(null, `failed to spawn pi: ${err.message}`));
+			child.on("error", (err) => {
+				if (aborted || timedOut || turnLimitExceeded) return;
+				settle(null, `failed to spawn pi: ${err.message}`);
+			});
 			child.on("close", (code) => {
 				consumeStdout(stdoutDecoder.end());
 				for (const event of eventParser.flush()) processEvent(event);

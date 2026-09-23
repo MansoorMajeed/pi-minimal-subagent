@@ -319,3 +319,10 @@ npm test
 npm run check
 npm pack --dry-run
 ```
+
+Process-group signalling is intentionally outside the portable routine suite.
+Run its focused integration check only in a host-capable environment:
+
+```bash
+npm run test:process-tree
+```

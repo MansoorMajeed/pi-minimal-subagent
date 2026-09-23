@@ -286,7 +286,7 @@ test("TUI defaults to background while non-TUI defaults to blocking and rejects 
 test("background status and cancellation require exact IDs and the direct command uses the same job", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-controls-"));
 	const oldPath = process.env.PATH;
-	const binDir = fakePi(dir, `setInterval(() => {}, 1000);`);
+	const binDir = fakePi(dir, `setTimeout(() => {}, 1_000);`);
 	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
 	const notifications: string[] = [];
 	const ctx = {
@@ -322,7 +322,7 @@ test("background status and cancellation require exact IDs and the direct comman
 test("exact-ID status includes queued, running, and frozen terminal timing", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-status-timing-"));
 	const oldPath = process.env.PATH;
-	const binDir = fakePi(dir, `setInterval(() => {}, 1000);`);
+	const binDir = fakePi(dir, `setTimeout(() => {}, 1_000);`);
 	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
 	const ctx = {
 		cwd: harnessDir,
@@ -398,7 +398,7 @@ test("tool and slash cancellation report when natural completion already won", {
 test("session replacement warns without cancelling until committed shutdown", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-lifecycle-"));
 	const oldPath = process.env.PATH;
-	const binDir = fakePi(dir, `setInterval(() => {}, 1000);`);
+	const binDir = fakePi(dir, `setTimeout(() => {}, 1_000);`);
 	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
 	let allow = false;
 	const ctx = {
@@ -428,34 +428,10 @@ test("session replacement warns without cancelling until committed shutdown", { 
 	}
 });
 
-test("session shutdown reaps fake-Pi descendants that ignore graceful termination", { concurrency: false }, async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-shutdown-tree-"));
-	const oldPath = process.env.PATH;
-	const pidPath = path.join(dir, "descendant.pid");
-	const descendant = `process.on("SIGTERM",()=>{}); setInterval(()=>{},1000);`;
-	const binDir = fakePi(dir, `const {spawn}=require("node:child_process"); const fs=require("node:fs"); process.on("SIGTERM",()=>{}); const child=spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:"ignore"}); fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid)); setInterval(()=>{},1000);`);
-	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
-	const ctx = { cwd: harnessDir, mode: "tui", modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "tree-session" }, ui: {} };
-	let descendantPid: number | undefined;
-	try {
-		const runtime = registeredRuntime();
-		await runtime.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
-		await runtime.tool.execute("tree", { tasks: [{ agent: "worker", task: "long tree" }] }, undefined, undefined, ctx);
-		for (let i = 0; i < 50 && !fs.existsSync(pidPath); i++) await new Promise((resolve) => setTimeout(resolve, 10));
-		descendantPid = Number(fs.readFileSync(pidPath, "utf8"));
-		await runtime.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
-		assert.throws(() => process.kill(descendantPid!, 0), { code: "ESRCH" });
-	} finally {
-		if (descendantPid) try { process.kill(descendantPid, "SIGKILL"); } catch { /* already dead */ }
-		process.env.PATH = oldPath;
-		fs.rmSync(dir, { recursive: true, force: true });
-	}
-});
-
 test("background completion delivers one goal-attributed follow-up while blocking calls and cancellation do not", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-delivery-"));
 	const oldPath = process.env.PATH;
-	const binDir = fakePi(dir, `const task=process.argv.at(-1); if(task.includes("long")) setInterval(()=>{},1000); else { const text=task.includes("failure")?"":"answer"; const message={role:"assistant",content:text?[{type:"text",text}]:[]}; process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"); process.exit(task.includes("failure")?1:0); }`);
+	const binDir = fakePi(dir, `const task=process.argv.at(-1); if(task.includes("long")) setTimeout(()=>{},1_000); else { const text=task.includes("failure")?"":"answer"; const message={role:"assistant",content:text?[{type:"text",text}]:[]}; process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"); process.exit(task.includes("failure")?1:0); }`);
 	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
 	const ctx = { cwd: harnessDir, mode: "tui", modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "delivery-session" }, isIdle: () => true, ui: { setWidget() {} } };
 	try {
@@ -525,9 +501,14 @@ test("busy completions wait for agent settlement and shutdown wins the deferred 
 		const escaped = registeredRuntime();
 		await escaped.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
 		const retained = await escaped.tool.execute("escape", { tasks: [{ agent: "worker", task: "complete while busy" }] }, undefined, undefined, ctx);
-		await new Promise((resolve) => setTimeout(resolve, 60));
+		let retainedStatus = "";
+		for (let i = 0; i < 100; i++) {
+			retainedStatus = (await escaped.tool.execute("status", { action: "status", id: retained.details.jobId }, undefined, undefined, ctx)).content[0].text;
+			if (/terminal/i.test(retainedStatus)) break;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
 		assert.equal(escaped.messages.length, 0);
-		assert.match((await escaped.tool.execute("status", { action: "status", id: retained.details.jobId }, undefined, undefined, ctx)).content[0].text, /terminal/i);
+		assert.match(retainedStatus, /terminal/i);
 		idle = true;
 		await escaped.handlers.get("agent_settled")?.[0]?.({}, ctx);
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -537,8 +518,14 @@ test("busy completions wait for agent settlement and shutdown wins the deferred 
 		idle = false;
 		const replaced = registeredRuntime();
 		await replaced.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
-		await replaced.tool.execute("replace", { tasks: [{ agent: "worker", task: "pending before replacement" }] }, undefined, undefined, ctx);
-		await new Promise((resolve) => setTimeout(resolve, 60));
+		const pending = await replaced.tool.execute("replace", { tasks: [{ agent: "worker", task: "pending before replacement" }] }, undefined, undefined, ctx);
+		let pendingStatus = "";
+		for (let i = 0; i < 100; i++) {
+			pendingStatus = (await replaced.tool.execute("status", { action: "status", id: pending.details.jobId }, undefined, undefined, ctx)).content[0].text;
+			if (/terminal/i.test(pendingStatus)) break;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.match(pendingStatus, /terminal/i);
 		assert.equal(replaced.messages.length, 0);
 		idle = true;
 		await replaced.handlers.get("agent_settled")?.[0]?.({}, ctx);
@@ -732,7 +719,7 @@ test("tool wiring preserves labeled task metadata, refreshes the clock, and clea
 			process.stderr.write("fake failure");
 			process.exit(1);
 		} else if (task.includes("abort path")) {
-			setInterval(() => {}, 1000);
+			setTimeout(() => {}, 1_000);
 		} else {
 			const emit = (x) => process.stdout.write(JSON.stringify(x) + "\\n");
 			setTimeout(() => {

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 
@@ -12,8 +14,16 @@ test("package exposes the extension without a model-invoked skill", () => {
 });
 
 test("packed extension includes its model guide and loader", () => {
-	const output = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, encoding: "utf8" });
-	const files = JSON.parse(output)[0].files.map((file: { path: string }) => file.path);
-	assert.ok(files.includes("SUBAGENT_MODELS.md"));
-	assert.ok(files.includes("src/model-guidance.ts"));
+	const cache = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-npm-cache-"));
+	try {
+		const output = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts", "--cache", cache], {
+			cwd: root,
+			encoding: "utf8",
+		});
+		const files = JSON.parse(output)[0].files.map((file: { path: string }) => file.path);
+		assert.ok(files.includes("SUBAGENT_MODELS.md"));
+		assert.ok(files.includes("src/model-guidance.ts"));
+	} finally {
+		fs.rmSync(cache, { recursive: true, force: true });
+	}
 });
