@@ -219,7 +219,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Fan out one or more focused child agents. In TUI sessions work runs in the background by default; use async:false to block. " +
+			"Fan out one or more focused child agents. In TUI, omit `async` whenever meaningful independent parent work remains. Use async:false only when the next parent action requires the child result and no meaningful independent work remains. " +
 			"Each task names an agent and a concrete instruction; multiple tasks run concurrently. " +
 			"Children cannot see the parent conversation, so make every task self-contained. " +
 			"Set a per-task `model` to use a faster/cheaper model for lighter work (e.g. a small model for recon, a stronger one for review). " +
@@ -440,8 +440,9 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			}
 			const n = args?.tasks?.length ?? 0;
 			const names = (args?.tasks ?? []).map((t: any) => sanitizeTerminalText(t.agent)).join(", ");
+			const mode = args?.async === false ? "blocking" : "background";
 			return new Text(
-				`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", `×${n}`)}${names ? ` (${names})` : ""}`,
+				`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", `×${n}`)}${names ? ` (${names})` : ""} ${theme.fg("dim", `[${mode}]`)}`,
 				0,
 				0,
 			);

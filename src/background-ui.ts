@@ -26,7 +26,7 @@ class BackgroundStatusComponent implements Component {
 		const running = all.filter(({ activity }) => activity.state === "running");
 		const queued = all.filter(({ activity }) => activity.state === "queued");
 		const shown = (running.length > 0 ? running : queued).slice(0, 2);
-		const header = `${running.length} run · ${queued.length} queued`;
+		const header = `Background · ${running.length} run · ${queued.length} queued`;
 		const lines = [truncateToWidth(this.theme.fg("dim", header), available, "…")];
 		let previousJobId: string | undefined;
 		for (const { job, activity } of shown) {

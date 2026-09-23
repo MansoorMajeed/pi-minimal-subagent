@@ -53,7 +53,10 @@ model-selection guidance.
 
 ## Background execution and controls
 
-Interactive TUI calls run in the background unless `async: false` is explicit:
+Interactive TUI calls run in the background unless `async: false` is explicit.
+Omit `async` whenever meaningful independent parent work remains. Use
+`async: false` only when the next parent action requires the child result and no
+meaningful independent work remains:
 
 ```ts
 subagent({ tasks: [{ agent: "scout", task: "Map the auth flow" }] })
