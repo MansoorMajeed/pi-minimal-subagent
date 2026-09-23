@@ -108,6 +108,20 @@ test("tool schema accepts an optional concise task label", () => {
 	assert.equal(taskProperties.label.description, "Concise display goal (e.g. 'Implement refresh-token rotation')");
 });
 
+test("tool guidance reserves blocking for immediately dependent work", () => {
+	const tool = registeredTool();
+	assert.match(tool.description, /omit `?async`?.*independent parent work/i);
+	assert.match(tool.description, /async:false only when.*requires the child result.*no meaningful independent work/i);
+});
+
+test("tool call header labels background and blocking execution", () => {
+	const tool = registeredTool();
+	const background = tool.renderCall({ tasks: [{ agent: "scout" }] }, fakeTheme()).render(80).join("\n");
+	const blocking = tool.renderCall({ tasks: [{ agent: "scout" }], async: false }, fakeTheme()).render(80).join("\n");
+	assert.match(background, /\[background\]/i);
+	assert.match(blocking, /\[blocking\]/i);
+});
+
 test("agent discovery includes the active guide without changing the tool description", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-guide-wiring-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
@@ -608,7 +622,7 @@ test("background widget mounts once, repaints in place, bounds cards, and unmoun
 		const component = widgets[0][1]({ requestRender: () => { renders++; } }, fakeTheme());
 		const lines = component.render(36);
 		assert.equal(lines.length, 14);
-		assert.equal(lines[0], "3 run · 1 queued");
+		assert.equal(lines[0], "Background · 3 run · 1 queued");
 		assert.equal(lines.filter((line: string) => line.includes("job-one")).length, 1);
 		assert.equal(lines.some((line: string) => line.includes("job-two")), false);
 		assert.ok(lines.every((line: string) => visibleWidth(line) <= 36));
@@ -642,7 +656,7 @@ test("background widget groups displayed cards under one header per job", () => 
 	const component = widgets[0][1]({ requestRender() {} }, fakeTheme());
 	const lines = component.render(80);
 
-	assert.equal(lines[0], "2 run · 0 queued");
+	assert.equal(lines[0], "Background · 2 run · 0 queued");
 	assert.equal(lines.filter((line: string) => line.includes("job-one")).length, 1);
 	assert.equal(lines.filter((line: string) => line.includes("job-two")).length, 1);
 	const firstHeader = lines.findIndex((line: string) => line.includes("job-one"));
