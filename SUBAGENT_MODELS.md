@@ -5,7 +5,7 @@ difficulty, not agent name alone. Explicit user model/provider choices take prec
 
 ## Luna — fast, economical execution
 
-Search: `gpt-5.6-luna`
+Search: `gpt-6-luna`
 
 Prefer for scouting, file mapping, bounded investigation, and mechanical
 implementation with precise instructions. Consider `xhigh` thinking for
@@ -13,7 +13,7 @@ implementation. Escalate when substantial judgment or ambiguity resolution is ne
 
 ## Sol — general-purpose strong model
 
-Search: `gpt-5.6-sol`
+Search: `gpt-6-sol`
 
 Prefer for substantive implementation, debugging, code review, and tasks requiring
 judgment. Default when Luna is insufficient and Astra is unnecessary.
@@ -43,4 +43,4 @@ is installed or invent an identifier. For multiple matches, apply the provider
 preference above; ask if that does not resolve the choice. If none match, report it.
 
 Pass the selected exact ID in the task's `model` field. To override agent thinking,
-append a Pi thinking suffix, e.g. `openai-codex/gpt-5.6-luna:xhigh`, when supported.
+append a Pi thinking suffix, e.g. `openai-codex/gpt-6-luna:xhigh`, when supported.
