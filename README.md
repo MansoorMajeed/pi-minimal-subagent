@@ -174,7 +174,7 @@ an incomplete policy.
 
 ```ts
 subagent({ action: "models", query: "luna" })
-subagent({ action: "models", query: "openai-codex/gpt-5.6-sol" })
+subagent({ action: "models", query: "openai-codex/gpt-6-sol" })
 ```
 
 A nonblank query is required. Searches filter Pi's available registry locally by
@@ -191,7 +191,7 @@ Children are separate Pi processes: a model registered only in the parent may
 not exist in a child's differently configured environment.
 
 Pass the chosen exact ID through the existing task `model` field. A supported
-thinking suffix (e.g. `openai-codex/gpt-5.6-luna:xhigh`) overrides agent thinking.
+thinking suffix (e.g. `openai-codex/gpt-6-luna:xhigh`) overrides agent thinking.
 Discovery never changes model precedence or silently substitutes another model.
 
 ## Agents

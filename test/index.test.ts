@@ -133,7 +133,7 @@ test("agent discovery includes the active guide without changing the tool descri
 		const bundled = (await discover()).content[0].text;
 		assert.match(bundled, /Available agents:/);
 		assert.match(bundled, /worker/);
-		assert.match(bundled, /gpt-5\.6-luna/);
+		assert.match(bundled, /gpt-6-luna/);
 		assert.ok(bundled.includes(path.join(harnessDir, "SUBAGENT_MODELS.md")));
 
 		const override = path.join(dir, "SUBAGENT_MODELS.md");
