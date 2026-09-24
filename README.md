@@ -67,14 +67,17 @@ subagent({ action: "cancel", id: "<exact-job-id>" })
 ```
 
 The background receipt contains the exact job ID, goals, and artifact directory.
-Natural completion adds one aggregate follow-up after every child settles; it
-waits behind an in-progress parent response rather than steering it. Explicitly
-cancelled jobs do not send that follow-up; their partial results remain available
-through exact-ID status. The parent can continue
-independent work, or briefly acknowledge that work is underway and yield. Use the
-completion to start dependent work. A newer user message does not steer children,
-so redirect by cancelling, letting cancellation settle, and relaunching with
-updated self-contained instructions.
+Natural completion adds one aggregate follow-up after every child in that job
+settles; it waits behind an in-progress parent response rather than steering it.
+A lone completion invokes the idle parent immediately. If several jobs are already
+waiting when the parent becomes idle, their completion messages are all added to
+context before one parent turn; a job that finishes later invokes the parent again.
+Explicitly cancelled jobs do not send a follow-up; their partial results remain
+available through exact-ID status. The parent can continue independent work, or
+briefly acknowledge that work is underway and yield. Use the completion to start
+dependent work. A newer user message does not steer children, so redirect by
+cancelling, letting cancellation settle, and relaunching with updated self-contained
+instructions.
 
 | Pi mode | Omitted `async` | `async: true` | `async: false` |
 |---|---|---|---|
@@ -114,10 +117,19 @@ as, for example, `17/80 turns`. The timeout countdown is a hard execution budget
 not an ETA.
 
 The optional task `label` is display-only. Without one, the goal is a clipped
-single-line preview of the task; the complete original task remains available
-in expanded view while the child is running. `Ctrl+O` shows assigned tasks and,
-after completion, the full child output below the fixed status block. Rows are
-Unicode-safely clipped to terminal width rather than wrapped.
+single-line preview of the task. Collapsed completion messages lead with each goal
+and its outcome, with the internal job ID shown afterward as secondary metadata:
+
+```text
+✓ Test installer on Debian 13 succeeded
+✗ Verify systemd shutdown failed
+  job muesjk3-wifc
+```
+
+The complete original task remains available in expanded view while the child is
+running. `Ctrl+O` shows assigned tasks and, after completion, the full child output
+below the fixed status block. Rows are Unicode-safely clipped to terminal width
+rather than wrapped.
 
 Children are instructed to emit sparse standalone
 `Progress: <completed milestone; next step or blocker>` lines. `Reported:` shows
@@ -174,7 +186,7 @@ an incomplete policy.
 
 ```ts
 subagent({ action: "models", query: "luna" })
-subagent({ action: "models", query: "openai-codex/gpt-5.6-sol" })
+subagent({ action: "models", query: "openai-codex/gpt-6-sol" })
 ```
 
 A nonblank query is required. Searches filter Pi's available registry locally by
@@ -191,7 +203,7 @@ Children are separate Pi processes: a model registered only in the parent may
 not exist in a child's differently configured environment.
 
 Pass the chosen exact ID through the existing task `model` field. A supported
-thinking suffix (e.g. `openai-codex/gpt-5.6-luna:xhigh`) overrides agent thinking.
+thinking suffix (e.g. `openai-codex/gpt-6-luna:xhigh`) overrides agent thinking.
 Discovery never changes model precedence or silently substitutes another model.
 
 ## Agents

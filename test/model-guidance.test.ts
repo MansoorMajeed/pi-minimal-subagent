@@ -18,7 +18,7 @@ test("missing global guide loads the bundled model and provider preferences", ()
 	withAgentDir((dir) => {
 		const guide = loadModelGuide(dir);
 		assert.equal(guide.filePath, new URL("../SUBAGENT_MODELS.md", import.meta.url).pathname);
-		for (const model of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"]) assert.ok(guide.text.includes(model));
+		for (const model of ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"]) assert.ok(guide.text.includes(model));
 		assert.match(guide.text, /openai-codex/);
 		assert.match(guide.text, /openrouter/);
 		assert.match(guide.text, /xhigh/);

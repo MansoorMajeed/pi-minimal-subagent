@@ -133,7 +133,7 @@ test("agent discovery includes the active guide without changing the tool descri
 		const bundled = (await discover()).content[0].text;
 		assert.match(bundled, /Available agents:/);
 		assert.match(bundled, /worker/);
-		assert.match(bundled, /gpt-5\.6-luna/);
+		assert.match(bundled, /gpt-6-luna/);
 		assert.ok(bundled.includes(path.join(harnessDir, "SUBAGENT_MODELS.md")));
 
 		const override = path.join(dir, "SUBAGENT_MODELS.md");
@@ -467,20 +467,31 @@ test("background completion delivers one goal-attributed follow-up while blockin
 	}
 });
 
-test("collapsed completion renderer distinguishes succeeded, failed, and mixed outcomes", () => {
+test("collapsed completion renderer leads with each task goal and keeps the job ID secondary", () => {
 	const { renderers } = registeredRuntime();
 	const renderer = renderers.get("minimal-subagent-complete");
 	const theme = { fg: (color: string, text: string) => `[${color}]${text}`, bold: (text: string) => text };
-	const activity = createActivity("worker", "test/model", { task: "task", goal: "goal" });
-	const render = (results: Array<{ ok: boolean }>) => renderer(
-		{ details: { jobId: "job-1", state: "terminal", activities: [activity], results } },
+	const first = createActivity("worker", "test/model", { task: "first task", goal: "Test installer on Debian 13" });
+	const second = createActivity("scout", "test/model", { task: "second task", goal: "Review OAuth implementation" });
+	const rendered = renderer(
+		{ details: { jobId: "job-1", state: "terminal", activities: [first, second], results: [{ ok: true }, { ok: false }] } },
 		{ expanded: false },
 		theme,
 	).render(100).join("\n");
 
-	assert.match(render([{ ok: true }]), /\[success\]✓[\s\S]*\[success\]succeeded/);
-	assert.match(render([{ ok: false }]), /\[error\]✗[\s\S]*\[error\]failed/);
-	assert.match(render([{ ok: true }, { ok: false }]), /\[warning\]![\s\S]*\[warning\]mixed/);
+	assert.match(rendered, /\[success\]✓[\s\S]*Test installer on Debian 13[\s\S]*\[success\]succeeded/);
+	assert.match(rendered, /\[error\]✗[\s\S]*Review OAuth implementation[\s\S]*\[error\]failed/);
+	assert.match(rendered, /job-1/);
+	assert.ok(rendered.indexOf("Test installer on Debian 13") < rendered.indexOf("job-1"));
+
+	const longGoal = createActivity("worker", "test/model", { task: "long task", goal: "Inspect Unicode completion rendering 界界界 across a narrow terminal" });
+	const narrowLines = renderer(
+		{ details: { jobId: "job-2", state: "terminal", activities: [longGoal], results: [{ ok: true }] } },
+		{ expanded: false },
+		theme,
+	).render(24);
+	assert.equal(narrowLines.length, 2);
+	assert.ok(narrowLines.every((line: string) => visibleWidth(line) <= 24));
 });
 
 test("busy completions wait for agent settlement and shutdown wins the deferred delivery race", { concurrency: false }, async () => {
@@ -532,6 +543,56 @@ test("busy completions wait for agent settlement and shutdown wins the deferred 
 		await replaced.handlers.get("session_shutdown")?.[0]?.({ reason: "new" }, ctx);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(replaced.messages.length, 0);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a ready completion backlog triggers one parent turn while later completions trigger immediately", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-delivery-batch-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"done"}]}; process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	let idle = false;
+	const ctx = {
+		cwd: harnessDir,
+		mode: "tui",
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "batch-session" },
+		isIdle: () => idle,
+		ui: { setWidget() {} },
+	};
+	try {
+		const runtime = registeredRuntime();
+		await runtime.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const first = await runtime.tool.execute("first", { tasks: [{ agent: "worker", task: "first queued completion" }] }, undefined, undefined, ctx);
+		const second = await runtime.tool.execute("second", { tasks: [{ agent: "worker", task: "second queued completion" }] }, undefined, undefined, ctx);
+		for (const receipt of [first, second]) {
+			let status = "";
+			for (let i = 0; i < 100; i++) {
+				status = (await runtime.tool.execute("status", { action: "status", id: receipt.details.jobId }, undefined, undefined, ctx)).content[0].text;
+				if (/terminal/i.test(status)) break;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			assert.match(status, /terminal/i);
+		}
+		assert.equal(runtime.messages.length, 0);
+
+		idle = true;
+		await runtime.handlers.get("agent_settled")?.[0]?.({}, ctx);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(runtime.messages.length, 2);
+		assert.deepEqual(runtime.messages.map((entry) => entry.options), [
+			{ deliverAs: "followUp", triggerTurn: false },
+			{ deliverAs: "followUp", triggerTurn: true },
+		]);
+
+		await runtime.tool.execute("later", { tasks: [{ agent: "worker", task: "later completion" }] }, undefined, undefined, ctx);
+		for (let i = 0; i < 100 && runtime.messages.length < 3; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(runtime.messages.length, 3);
+		assert.deepEqual(runtime.messages[2].options, { deliverAs: "followUp", triggerTurn: true });
+		await runtime.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
