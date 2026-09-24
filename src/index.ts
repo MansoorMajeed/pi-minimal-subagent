@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
@@ -82,14 +82,15 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	let sessionId: string | undefined;
 	let completionSubmitted = new Set<string>();
 	let deliveryErrors = new Map<string, string>();
-	let pendingDeliveries = new Map<string, {
+	type PendingDelivery = {
 		jobs: JobRegistry;
 		generation: number;
 		sessionId: string | undefined;
 		handle: JobHandle;
 		results: SubagentResult[];
 		runDir: string;
-	}>();
+	};
+	let pendingDeliveries = new Map<string, PendingDelivery>();
 	let deliveryCheck: ReturnType<typeof setImmediate> | undefined;
 	let runtimeContext: any;
 	let backgroundUI: BackgroundUI | undefined;
@@ -97,6 +98,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 
 	const flushPendingDeliveries = () => {
 		if (!runtimeAlive || runtimeContext?.isIdle?.() !== true) return;
+		const ready: Array<[string, PendingDelivery, ReturnType<JobHandle["snapshot"]>]> = [];
 		for (const [id, pending] of pendingDeliveries) {
 			const snapshot = pending.handle.snapshot();
 			if (
@@ -106,10 +108,13 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				pendingDeliveries.delete(id);
 				continue;
 			}
-			if (runtimeContext?.isIdle?.() !== true) return;
+			ready.push([id, pending, snapshot]);
+		}
+		for (let index = 0; index < ready.length; index++) {
+			const [id, pending, snapshot] = ready[index];
 			pendingDeliveries.delete(id);
 			completionSubmitted.add(id);
-			const goals = snapshot.activities.map((activity, index) => `[${index + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
+			const goals = snapshot.activities.map((activity, goalIndex) => `[${goalIndex + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
 			try {
 				pi.sendMessage(
 					{
@@ -118,7 +123,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						display: true,
 						details: { runDir: pending.runDir, jobId: id, state: snapshot.state, activities: pending.results.map((result) => result.activity), results: pending.results } satisfies SubagentDetails,
 					},
-					{ deliverAs: "followUp", triggerTurn: true },
+					{ deliverAs: "followUp", triggerTurn: index === ready.length - 1 },
 				);
 			} catch (error) {
 				deliveryErrors.set(id, error instanceof Error ? error.message : String(error));
@@ -201,16 +206,21 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	pi.registerMessageRenderer("minimal-subagent-complete", (message: any, { expanded }: any, theme: any) => {
 		const details = message.details as SubagentDetails | undefined;
 		const id = details?.jobId ?? "unknown";
-		if (!expanded || !details?.activities?.length) {
-			const results = details?.results ?? [];
-			const succeeded = results.filter((result) => result.ok).length;
-			const outcome = succeeded === results.length ? "succeeded" : succeeded === 0 ? "failed" : "mixed";
-			const presentation = outcome === "succeeded"
-				? { icon: "✓", color: "success" }
-				: outcome === "failed"
-					? { icon: "✗", color: "error" }
-					: { icon: "!", color: "warning" };
-			return new Text(`${theme.fg(presentation.color, presentation.icon)} ${theme.fg("toolTitle", theme.bold(`subagent ${id}`))} ${theme.fg(presentation.color, outcome)}`, 0, 0);
+		if (!details?.activities?.length) {
+			return new Text(`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("dim", id)}`, 0, 0);
+		}
+		if (!expanded) {
+			const lines = details.activities.map((activity, index) => {
+				const succeeded = details.results?.[index]?.ok === true;
+				const outcome = succeeded ? "succeeded" : "failed";
+				const presentation = succeeded ? { icon: "✓", color: "success" } : { icon: "✗", color: "error" };
+				return `${theme.fg(presentation.color, presentation.icon)} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(activity.goal)))} ${theme.fg(presentation.color, outcome)}`;
+			});
+			lines.push(theme.fg("dim", `  job ${id}`));
+			return {
+				render: (width: number) => lines.map((line) => truncateToWidth(line, Math.max(1, width), "…")),
+				invalidate() {},
+			};
 		}
 		return new SubagentStatusComponent(buildStatusRows(details.activities), summarize(details.results ?? []), theme);
 	});
