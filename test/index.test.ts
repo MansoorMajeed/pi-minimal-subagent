@@ -299,11 +299,22 @@ test("background status and cancellation require exact IDs and the direct comman
 	try {
 		const { tool, handlers, commands } = registeredRuntime();
 		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
-		const one = await tool.execute("one", { tasks: [{ agent: "worker", label: "first goal", task: "first" }] }, undefined, undefined, ctx);
+		const one = await tool.execute("one", { tasks: [{ agent: "worker", label: "first goal", task: "first detailed instructions" }] }, undefined, undefined, ctx);
 		const two = await tool.execute("two", { tasks: [{ agent: "worker", task: "second" }] }, undefined, undefined, ctx);
 		const active = await tool.execute("status", { action: "status" }, undefined, undefined, ctx);
 		assert.match(active.content[0].text, new RegExp(one.details.jobId));
 		assert.match(active.content[0].text, new RegExp(two.details.jobId));
+		const snapshot = await tool.execute("status-one", { action: "status", id: one.details.jobId }, undefined, undefined, ctx);
+		const compact = tool.renderResult(snapshot, { expanded: false, isPartial: false }, fakeTheme()).render(80);
+		assert.equal(compact.length, 2);
+		assert.match(compact[0], /Status snapshot.*Job .*running/);
+		assert.match(compact[1], /worker.*first goal/);
+		assert.ok(compact.every((line: string) => visibleWidth(line) <= 80));
+		const expanded = tool.renderResult(snapshot, { expanded: true, isPartial: false }, fakeTheme()).render(120).join("\n");
+		assert.match(expanded, /Artifacts: \/tmp\/pi-minsub/);
+		assert.match(expanded, /worker — queued — first goal — queued — Queued/);
+		assert.match(expanded, /first detailed instructions/);
+		assert.equal(tool.renderResult(one, { expanded: false, isPartial: false }, fakeTheme()).render(80).length, 6);
 		await assert.rejects(() => tool.execute("bad", { action: "status", id: one.details.jobId.slice(0, 4) }, undefined, undefined, ctx), /Unknown/);
 		await assert.rejects(() => tool.execute("missing", { action: "cancel" }, undefined, undefined, ctx), /requires.*id/i);
 
@@ -311,6 +322,9 @@ test("background status and cancellation require exact IDs and the direct comman
 		assert.match(notifications.at(-1)!, /cancelled/i);
 		const final = await tool.execute("status-one", { action: "status", id: one.details.jobId }, undefined, undefined, ctx);
 		assert.match(final.content[0].text, /aborted|FAILED/i);
+		const finalExpanded = tool.renderResult(final, { expanded: true, isPartial: false }, fakeTheme()).render(120).join("\n");
+		assert.match(finalExpanded, /Artifacts:/);
+		assert.doesNotMatch(finalExpanded, /Task \[1\]/);
 		await tool.execute("cancel-two", { action: "cancel", id: two.details.jobId }, undefined, undefined, ctx);
 		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
 	} finally {
