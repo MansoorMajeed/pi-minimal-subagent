@@ -52,6 +52,7 @@ interface SubagentDetails {
 	runDir: string;
 	jobId?: string;
 	state?: string;
+	statusSnapshot?: boolean;
 	activities: ChildActivity[];
 	results?: SubagentResult[];
 }
@@ -258,7 +259,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					const text = jobStatusText(snapshot) + (deliveryError ? `\nCompletion delivery failed: ${deliveryError}` : "");
 					return {
 						content: [{ type: "text" as const, text: boundedText(text) }],
-						details: { runDir: snapshot.runDir, jobId: snapshot.id, state: snapshot.state, activities: snapshot.activities, results: snapshot.results } satisfies SubagentDetails,
+						details: { runDir: snapshot.runDir, jobId: snapshot.id, state: snapshot.state, statusSnapshot: true, activities: snapshot.activities, results: snapshot.results } satisfies SubagentDetails,
 					};
 				}
 				const active = jobs.listActiveBackground();
@@ -460,6 +461,18 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 
 		renderResult(result: any, { expanded, isPartial }: any, theme: any) {
 			const details = result.details as SubagentDetails | undefined;
+			if (details?.statusSnapshot) {
+				const text = sanitizeTerminalText(result.content?.find((item: any) => item.type === "text")?.text ?? "");
+				if (expanded) return details.activities.some((activity) => activity.task)
+					? new SubagentStatusComponent(buildStatusRows(details.activities), expandedTaskText(details.activities, text), theme)
+					: new Text(text, 0, 0);
+				const lines = text.split("\n").slice(0, details.activities.length + 1);
+				lines[0] = `Status snapshot · ${lines[0]}`;
+				return {
+					render: (width: number) => lines.map((line) => truncateToWidth(theme.fg("dim", line), Math.max(1, width), "…")),
+					invalidate() {},
+				};
+			}
 			if (!details?.activities?.length) {
 				const text = result.content?.find((item: any) => item.type === "text")?.text ?? "(no output)";
 				return new Text(sanitizeTerminalText(text), 0, 0);
