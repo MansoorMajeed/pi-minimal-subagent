@@ -86,6 +86,7 @@ function syntheticResult(child: JobChild, state: "aborted" | "failed", message: 
 		inlineAnswer: "",
 		exitCode: null,
 		logPath: child.options!.logPath,
+		sessionPath: child.options!.sessionPath,
 		timedOut: false,
 		turnLimitExceeded: false,
 		error: message,

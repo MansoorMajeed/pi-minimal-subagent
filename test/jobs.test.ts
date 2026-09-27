@@ -92,12 +92,16 @@ test("queued cancellation settles without spawning and running cancellation hold
 		},
 	});
 	const running = registry.submit({ id: "running", runDir: "/tmp/running", background: true, children: [child("a")] });
-	const queued = registry.submit({ id: "queued", runDir: "/tmp/queued", background: true, children: [child("b"), child("c")] });
+	const queuedChildren = [child("b"), child("c")];
+	queuedChildren[0].options.sessionPath = "/private/b.jsonl";
+	queuedChildren[1].options.sessionPath = "/private/c.jsonl";
+	const queued = registry.submit({ id: "queued", runDir: "/tmp/queued", background: true, children: queuedChildren });
 	await flush();
 	const queuedCancellation = await registry.cancel("queued");
 	assert.equal(queuedCancellation.disposition, "cancelled");
 	assert.deepEqual(started, ["a"]);
 	assert.deepEqual(queuedCancellation.results.map((item) => item.activity.state), ["aborted", "aborted"]);
+	assert.deepEqual(queuedCancellation.results.map((item) => item.sessionPath), ["/private/b.jsonl", "/private/c.jsonl"]);
 
 	let cancelled = false;
 	const cancellation = registry.cancel("running").then(() => { cancelled = true; });

@@ -24,6 +24,28 @@ function baseOptions(dir: string) {
 	};
 }
 
+test("runSubagent uses a fresh native session path without changing the event log", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const emit = (x) => process.stdout.write(JSON.stringify(x) + "\\n");
+	const message = {role:"assistant",content:[{type:"text",text:"done"}]};
+	emit({type:"agent_end",messages:[message]});
+	require("node:fs").writeFileSync(process.argv[process.argv.indexOf("--session") + 1], "native session");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const sessionPath = path.join(dir, "private", "child.jsonl");
+		fs.mkdirSync(path.dirname(sessionPath));
+		const result = await runSubagent({ ...baseOptions(dir), sessionPath });
+		assert.equal(result.sessionPath, sessionPath);
+		assert.equal(fs.readFileSync(sessionPath, "utf8"), "native session");
+		assert.match(fs.readFileSync(result.logPath, "utf8"), /agent_end/);
+		assert.notEqual(result.logPath, sessionPath);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("runSubagent marks the spawned process as a minimal subagent child", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
 	const oldPath = process.env.PATH;
@@ -139,7 +161,10 @@ test("failed spawn does not invent child runtime", { concurrency: false }, async
 	fs.mkdirSync(emptyBin);
 	process.env.PATH = emptyBin;
 	try {
-		const result = await runSubagent({ ...baseOptions(dir), now: () => 10_000 });
+		const sessionPath = path.join(dir, "private", "child.jsonl");
+		const result = await runSubagent({ ...baseOptions(dir), sessionPath, now: () => 10_000 });
+		assert.equal(result.sessionPath, sessionPath);
+		assert.equal(fs.existsSync(sessionPath), false);
 		assert.equal(result.ok, false);
 		assert.match(result.error!, /failed to spawn pi:.*ENOENT/);
 		assert.equal(result.activity.startedAt, undefined);
