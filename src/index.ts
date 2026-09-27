@@ -337,7 +337,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			const parentSessionFile: string | undefined = ctx.sessionManager?.getSessionFile?.() ?? undefined;
 			let sessionDir: string | undefined;
 			if (parentSessionFile) {
-				const root = path.join(path.dirname(parentSessionFile), path.basename(parentSessionFile, ".jsonl"), "pi-minimal-subagent");
+				const root = path.join(path.dirname(parentSessionFile), `${path.basename(parentSessionFile)}.pi-minimal-subagent`);
 				fs.mkdirSync(root, { recursive: true, mode: 0o700 });
 				sessionDir = path.join(root, runId);
 				fs.mkdirSync(sessionDir, { mode: 0o700 });

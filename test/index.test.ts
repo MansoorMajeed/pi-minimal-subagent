@@ -800,12 +800,22 @@ test("persisted parents allocate private, distinct child session paths; ephemera
 		assert.equal(new Set(sessions).size, 2);
 		for (const [index, item] of persistent.details.results.entries()) {
 			assert.equal(item.ok, true);
-			assert.equal(item.sessionPath, path.join(dir, "sessions", "parent", "pi-minimal-subagent", path.basename(persistent.details.runDir), `${index + 1}-scout.jsonl`));
+			assert.equal(item.sessionPath, path.join(dir, "sessions", "parent.jsonl.pi-minimal-subagent", path.basename(persistent.details.runDir), `${index + 1}-scout.jsonl`));
 			assert.equal(fs.statSync(path.dirname(item.sessionPath)).mode & 0o777, 0o700);
 			assert.equal(fs.existsSync(item.sessionPath), false); // A path is allocated; Pi creates its file on first saved message.
 			const args = JSON.parse(item.answer);
 			assert.equal(args[args.indexOf("--session") + 1], item.sessionPath);
 			assert.equal(args.includes("--no-session"), false);
+		}
+		for (const filename of ["parent-no-extension", "parent.data"]) {
+			const nonstandardParent = path.join(dir, "sessions", filename);
+			fs.writeFileSync(nonstandardParent, "existing parent session");
+			const result = await tool.execute(`call-${filename}`, {
+				async: false, tasks: [{ agent: "scout", task: "four" }],
+			}, undefined, undefined, { cwd: dir, mode: "print", sessionManager: { getSessionFile: () => nonstandardParent } });
+			runDirs.push(result.details.runDir);
+			assert.equal(result.details.results[0].ok, true);
+			assert.equal(result.details.results[0].sessionPath, path.join(dir, "sessions", `${filename}.pi-minimal-subagent`, path.basename(result.details.runDir), "1-scout.jsonl"));
 		}
 		const ephemeral = await tool.execute("call-ephemeral", {
 			async: false, tasks: [{ agent: "scout", task: "three" }],

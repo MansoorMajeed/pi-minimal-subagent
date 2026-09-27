@@ -316,7 +316,7 @@ both views.
 `logPath` points to a temporary JSONL **event stream** under
 `$TMPDIR/pi-minsub/<run>/`, not a Pi session. That directory may also contain
 spilled Markdown answers. A saved parent's child sessions live under
-`<parent session directory>/<parent session basename>/pi-minimal-subagent/<run>/<index>-<agent>.jsonl`.
+`<parent session directory>/<parent session filename>.pi-minimal-subagent/<run>/<index>-<agent>.jsonl`.
 The optional `sessionPath` in each terminal result is the allocated native Pi
 session path. Pi may not create the file if the child is cancelled or fails
 before persisting an assistant message. Children of ephemeral parents still
