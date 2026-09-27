@@ -33,6 +33,8 @@ export interface SubagentRunOptions {
 	goal?: string;
 	/** Path to the JSONL log file to tee stdout into. */
 	logPath: string;
+	/** Allocated native Pi session path; Pi creates the file when it persists a message. */
+	sessionPath?: string;
 	model?: string;
 	/** Thinking level (off|minimal|low|medium|high|xhigh); passed as `--thinking`. */
 	thinking?: string;
@@ -66,6 +68,7 @@ export interface SubagentResult {
 	outputPath?: string;
 	exitCode: number | null;
 	logPath: string;
+	sessionPath?: string;
 	timedOut: boolean;
 	turnLimitExceeded: boolean;
 	error?: string;
@@ -303,6 +306,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				outputPath: spilled.outputPath,
 				exitCode,
 				logPath: opts.logPath,
+				sessionPath: opts.sessionPath,
 				timedOut,
 				turnLimitExceeded,
 				error,
@@ -312,7 +316,9 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		};
 
 		try {
-			const args = ["--print", "--mode", "json", "--no-session"];
+			const args = ["--print", "--mode", "json"];
+			if (opts.sessionPath) args.push("--session", opts.sessionPath);
+			else args.push("--no-session");
 			if (opts.model) args.push("--model", opts.model);
 			// Apply the agent's thinking level unless the model string already names one.
 			const modelHasLevel = !!opts.model && /:(off|minimal|low|medium|high|xhigh)$/.test(opts.model);

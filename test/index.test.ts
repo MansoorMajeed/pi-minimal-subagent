@@ -781,6 +781,55 @@ test("queued widget cards appear only when no child is running and narrow render
 	manager.dispose();
 });
 
+test("persisted parents allocate private, distinct child session paths; ephemeral parents do not", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-index-test-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message = {role:"assistant",content:[{type:"text",text:JSON.stringify(process.argv.slice(2))}]};
+	process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]}) + "\\n");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const runDirs: string[] = [];
+	try {
+		const tool = registeredTool();
+		const parentPath = path.join(dir, "sessions", "parent.jsonl"); // The parent may not exist on disk yet.
+		const persistent = await tool.execute("call-persistent", {
+			async: false,
+			tasks: [{ agent: "scout", task: "one" }, { agent: "scout", task: "two" }],
+		}, undefined, undefined, { cwd: dir, mode: "print", sessionManager: { getSessionFile: () => parentPath } });
+		runDirs.push(persistent.details.runDir);
+		const sessions = persistent.details.results.map((item: any) => item.sessionPath);
+		assert.equal(new Set(sessions).size, 2);
+		for (const [index, item] of persistent.details.results.entries()) {
+			assert.equal(item.ok, true);
+			assert.equal(item.sessionPath, path.join(dir, "sessions", "parent.jsonl.pi-minimal-subagent", path.basename(persistent.details.runDir), `${index + 1}-scout.jsonl`));
+			assert.equal(fs.statSync(path.dirname(item.sessionPath)).mode & 0o777, 0o700);
+			assert.equal(fs.existsSync(item.sessionPath), false); // A path is allocated; Pi creates its file on first saved message.
+			const args = JSON.parse(item.answer);
+			assert.equal(args[args.indexOf("--session") + 1], item.sessionPath);
+			assert.equal(args.includes("--no-session"), false);
+		}
+		for (const filename of ["parent-no-extension", "parent.data"]) {
+			const nonstandardParent = path.join(dir, "sessions", filename);
+			fs.writeFileSync(nonstandardParent, "existing parent session");
+			const result = await tool.execute(`call-${filename}`, {
+				async: false, tasks: [{ agent: "scout", task: "four" }],
+			}, undefined, undefined, { cwd: dir, mode: "print", sessionManager: { getSessionFile: () => nonstandardParent } });
+			runDirs.push(result.details.runDir);
+			assert.equal(result.details.results[0].ok, true);
+			assert.equal(result.details.results[0].sessionPath, path.join(dir, "sessions", `${filename}.pi-minimal-subagent`, path.basename(result.details.runDir), "1-scout.jsonl"));
+		}
+		const ephemeral = await tool.execute("call-ephemeral", {
+			async: false, tasks: [{ agent: "scout", task: "three" }],
+		}, undefined, undefined, { cwd: dir, mode: "print", sessionManager: { getSessionFile: () => undefined } });
+		runDirs.push(ephemeral.details.runDir);
+		assert.equal(ephemeral.details.results[0].sessionPath, undefined);
+		assert.equal(JSON.parse(ephemeral.details.results[0].answer).includes("--no-session"), true);
+	} finally {
+		process.env.PATH = oldPath;
+		for (const runDir of runDirs) fs.rmSync(runDir, { recursive: true, force: true });
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("tool wiring preserves labeled task metadata, refreshes the clock, and clears its timer", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-index-test-"));
 	const oldPath = process.env.PATH;

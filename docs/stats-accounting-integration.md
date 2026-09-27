@@ -1,8 +1,10 @@
 # Stats Accounting Integration Recommendations
 
-`pi-minimal-subagent` runs child agents as separate `pi --print --mode json --no-session` processes. Their provider calls are billed independently, but their assistant messages are not persisted as native assistant messages in the parent session. A stats consumer that only sums parent `AssistantMessage.usage` therefore misses child usage.
+`pi-minimal-subagent` runs child agents as separate `pi --print --mode json` processes. With a saved parent, each child gets an independent native Pi session at `<parent session directory>/<parent session filename>.pi-minimal-subagent/<run>/<index>-<agent>.jsonl`. An ephemeral parent keeps its children `--no-session`. Pi's normal session listing is non-recursive and will not discover the nested child files automatically. The separate `$TMPDIR/pi-minsub/<run>/<index>-<agent>.jsonl` file is an event stream, **not** a native Pi session.
 
-The extension currently preserves recoverable child usage in two parent-session locations: finalized `subagent` tool results (blocking execution and terminal status/cancel results) and background `minimal-subagent-complete` custom messages. These records are enough for combined cost and token totals, but not enough for reliable model attribution, exact daily attribution, completeness reporting, or correlation with telemetry emitted inside child processes.
+Child provider calls are billed independently, but their assistant messages are not persisted as native assistant messages in the parent session. A stats consumer that only sums parent `AssistantMessage.usage` therefore misses child usage. Native child sessions can supply model-specific and timed usage for completed persisted turns; a path is only an allocated destination and may not exist if a child fails or is cancelled before persistence. Temporary event logs are still written for ephemeral parents. These child session directories can outlive deletion of their parent and must be removed separately if desired; they contain sensitive prompts, tool arguments/results, and responses.
+
+The extension also preserves recoverable child usage in two parent-session locations: finalized `subagent` tool results (blocking execution and terminal status/cancel results) and background `minimal-subagent-complete` custom messages. These records are enough for combined cost and token totals, but not enough for reliable model attribution, exact daily attribution, completeness reporting, or correlation with telemetry emitted inside child processes. Native child sessions and these summaries describe the same provider calls: use one accounting source per child, never add them together.
 
 ## Current Consumer Contract
 
@@ -23,7 +25,7 @@ entry.customType == "minimal-subagent-complete"
 results = entry.details.results
 ```
 
-For either path, the canonical child accounting record is `results[index].usage`. Consumers must not also sum these copied display/status views:
+When accounting from **parent records**, the canonical child accounting record is `results[index].usage`. `results[index].sessionPath` identifies the allocated native session (if any), while `results[index].logPath` identifies the temporary event log. Consumers using native sessions instead should correlate by `sessionPath` and not also sum the corresponding parent `usage`. Consumers must not also sum these copied display/status views:
 
 ```text
 details.activities[index].usage
