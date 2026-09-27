@@ -4,7 +4,7 @@ A deliberately small Pi extension: **one tool** that fans out focused child
 agents, keeps their progress visible, and returns aggregate results. In the TUI,
 delegation runs in the background by default so the parent remains available.
 There is no workflow engine, wait tool, intercom, worktree management, retry
-system, or persistent child session — the parent stays the orchestrator.
+system, or persistent job runtime — the parent stays the orchestrator.
 
 If you need the full orchestration framework, use
 [`pi-subagents`](https://github.com/nicobailon/pi-subagents) instead.
@@ -264,9 +264,10 @@ safe without those guards.
 
 - Child processes receive `PI_MINIMAL_SUBAGENT_CHILD=1`; this package does not
   register another `subagent` tool inside them, preventing recursive fan-out.
-- Children run with `--no-session` and a 30-minute wall-clock timeout by
-  default. Agent frontmatter can set `timeoutMs` to another supported positive
-  integer.
+- Children of a saved parent run with their own native Pi session files; an
+  ephemeral parent (`--no-session`) keeps its children without native session
+  persistence. Each child has a 30-minute wall-clock timeout by default. Agent
+  frontmatter can set `timeoutMs` to another supported positive integer.
 - There is no default turn cap. A positive-integer `maxTurns` stops the child
   before the next turn after that many completed assistant turns; its last
   completed answer is retained.
@@ -294,7 +295,7 @@ The model-facing result is a per-task summary. Structured results are available
 on `details.results`, one per task:
 
 ```text
-agent, ok, answer, inlineAnswer, outputPath?, exitCode, logPath,
+agent, ok, answer, inlineAnswer, outputPath?, exitCode, logPath, sessionPath?,
 timedOut, turnLimitExceeded, error?, usage, activity
 ```
 
@@ -312,14 +313,29 @@ store records on the `subagent` tool result. Background records are stored on th
 that only scan tool results must recognize that custom message without counting
 both views.
 
-Run artifacts live under `$TMPDIR/pi-minsub/<run>/` and include one JSONL event
-log per child plus any spilled Markdown output.
+`logPath` points to a temporary JSONL **event stream** under
+`$TMPDIR/pi-minsub/<run>/`, not a Pi session. That directory may also contain
+spilled Markdown answers. A saved parent's child sessions live under
+`<parent session directory>/<parent session basename>/pi-minimal-subagent/<run>/<index>-<agent>.jsonl`.
+The optional `sessionPath` in each terminal result is the allocated native Pi
+session path. Pi may not create the file if the child is cancelled or fails
+before persisting an assistant message. Children of ephemeral parents still
+write temporary event logs; `--no-session` does not make them disk-free.
+
+Native child sessions contain prompts, system instructions, tool arguments and
+outputs, and model responses: treat them as sensitive. Child run directories
+are created private (mode `0700`). Deleting a parent session does not delete
+its child sessions; remove the nested directory separately if needed. Pi's
+ordinary session listing does not search these nested directories. A future
+stats extension can discover them explicitly, but must count child usage from
+either native sessions or the parent result summaries, never both.
 
 ## How it works
 
-Each child is a headless `pi --print --mode json --no-session` process. The
-parent incrementally parses stdout, tees it to a JSONL log, derives activity and
-usage, and extracts the last assistant message. One session-local FIFO scheduler
+Each child is a headless `pi --print --mode json` process with either a unique
+`--session` path (saved parent) or `--no-session` (ephemeral parent). The parent
+incrementally parses stdout, tees it to a temporary JSONL event log, derives
+activity and usage, and extracts the last assistant message. One session-local FIFO scheduler
 shares four active child slots across blocking and background calls; receipts do
 not wait for a slot. Results preserve original task order. Background state is
 not restored after session replacement or process restart.
