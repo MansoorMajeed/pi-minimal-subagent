@@ -55,16 +55,17 @@ function setup(count = 1) {
 function ui(rows = 9) {
 	const views: Array<{ render(width: number): string[]; handleInput(data: string): void; dispose?(): void }> = [];
 	const notices: string[] = [];
+	const customOptions: any[] = [];
 	const selects: Array<{ title: string; options: string[]; signal?: AbortSignal; resolve(value: string | undefined): void }> = [];
 	const confirms: Array<{ message: string; signal?: AbortSignal; resolve(value: boolean): void }> = [];
 	const terminal = { rows, columns: 40 };
 	const ctx = { mode: "tui", ui: {
 		notify: (msg: string) => notices.push(msg),
-		custom: (factory: Function) => new Promise((resolve) => { views.push(factory({ terminal, requestRender() {} }, { fg: (_c: string, s: string) => s, bold: (s: string) => s }, {}, resolve)); }),
+		custom: (factory: Function, options: any) => new Promise((resolve) => { customOptions.push(options); views.push(factory({ terminal, requestRender() {} }, { fg: (_c: string, s: string) => s, bold: (s: string) => s }, {}, resolve)); }),
 		select: (title: string, options: string[], opts?: { signal?: AbortSignal }) => new Promise<string | undefined>((resolve) => selects.push({ title, options, signal: opts?.signal, resolve })),
 		confirm: (_title: string, message: string, opts?: { signal?: AbortSignal }) => new Promise<boolean>((resolve) => confirms.push({ message, signal: opts?.signal, resolve })),
 	} };
-	return { ctx, terminal, views, notices, selects, confirms };
+	return { ctx, terminal, views, notices, selects, confirms, customOptions };
 }
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -85,6 +86,8 @@ test("real SelectList scrolls all jobs, preserves exact ID through resize, and b
 	const command = showJobPicker(screen.ctx, jobs, owner.signal);
 	const picker = screen.views[0];
 	assert.ok(picker.render(40).length <= 9);
+	assert.equal(screen.customOptions[0]?.overlay, true, "footer and live widgets must not push the selected row off-screen");
+	assert.deepEqual(screen.customOptions[0]?.overlayOptions, { width: "100%", maxHeight: "100%" });
 	for (let i = 0; i < 34; i++) picker.handleInput("\x1b[B");
 	assert.match(picker.render(40).join("\n"), /job-34/);
 	screen.terminal.rows = 1;
@@ -148,6 +151,7 @@ test("details snapshot scrolls safely and never modifies editor or inserts messa
 	const details = screen.views[1];
 	assert.ok(details);
 	assert.match(details.render(80)[0], /snapshot/i);
+	assert.equal(screen.customOptions[1]?.overlay, true, "details must not be clipped by Pi's footer");
 	let lines = details.render(20);
 	assert.ok(lines.length <= 7 && lines.every((line) => visibleWidth(line) <= 20));
 	details.handleInput("\x1b[F");

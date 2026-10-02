@@ -65,7 +65,7 @@ async function customView<T>(
 			handleInput: (data: string) => { if (!completed && !signal.aborted) view.handleInput(data); },
 			dispose: () => { signal.removeEventListener("abort", onAbort); view.dispose(); },
 		};
-	});
+	}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } });
 }
 
 async function pickJob(ctx: ExtensionCommandContext, jobs: JobSnapshot[], signal: AbortSignal): Promise<string | null> {
