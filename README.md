@@ -94,7 +94,8 @@ retains terminal results for the current session runtime. Human controls are als
 
 `/subagents` opens a bounded, scrollable TUI picker: active background jobs first,
 then retained terminal jobs, newest-submitted first. Choose a job by its goals and
-state; its exact ID stays visible to distinguish duplicate or clipped goals.
+state; its ID (or distinguishing suffix on narrow screens) stays visible to
+distinguish duplicate or clipped goals.
 Select **View details** for a read-only snapshot, or **Cancel job** for a confirmation
 that reminds you file edits are not undone. Jobs that finish while you decide are
 reported as already finished rather than cancelled.
