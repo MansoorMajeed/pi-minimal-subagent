@@ -203,6 +203,10 @@ export async function showJobPicker(ctx: ExtensionCommandContext, jobs: JobRegis
 		if (current.state === "cancelling") { ctx.ui.notify(`Job ${id} is already cancelling`, "info"); return; }
 		const cancellation = await jobs.cancel(id);
 		if (signal.aborted) return;
+		if (cancellation.results.length > 0 && cancellation.results.every((result) => result.ok)) {
+			ctx.ui.notify(`Job ${id} finished successfully before cancellation took effect. View results with /subagents.`, "info");
+			return;
+		}
 		ctx.ui.notify(cancellation.disposition === "already-terminal" ? `Job ${id} already finished` : cancellation.disposition === "already-cancelling" ? `Job ${id} is already cancelling` : `Job ${id} cancelled. File edits are not undone.`, "info");
 	} catch (error) {
 		if (signal.aborted) return;

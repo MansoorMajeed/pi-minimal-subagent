@@ -248,9 +248,32 @@ test("Escape and declined confirmation leave running work untouched; confirmed c
 	screen.confirms[1].resolve(true);
 	await tick();
 	assert.equal(jobs.get("job-0")?.state, "cancelling");
-	gates.get("agent-0")!.resolve(result("agent-0"));
+	const cancelled = result("agent-0");
+	cancelled.ok = false;
+	cancelled.activity.state = "aborted";
+	gates.get("agent-0")!.resolve(cancelled);
 	await approved;
 	assert.match(screen.notices.join("\n"), /cancelled.*edits are not undone/i);
+	owner.abort();
+});
+
+test("completion winning during cancellation settlement reports success and points to retained results", async () => {
+	const { jobs, gates } = setup();
+	const screen = ui();
+	const owner = new AbortController();
+	const command = showJobPicker(screen.ctx, jobs, owner.signal);
+	screen.views[0].handleInput("\r");
+	await tick();
+	screen.selects[0].resolve("Cancel job");
+	await tick();
+	// Resolve the child without flushing the registry's settlement microtasks.
+	gates.get("agent-0")!.resolve(result("agent-0"));
+	screen.confirms[0].resolve(true);
+	await command;
+	assert.equal(jobs.get("job-0")?.cancelRequested, true, "exercise the cancellation/settlement gap");
+	assert.equal(jobs.get("job-0")?.results[0].ok, true);
+	assert.match(screen.notices.join("\n"), /finished successfully.*\/subagents/);
+	assert.doesNotMatch(screen.notices.join("\n"), /cancelled/);
 	owner.abort();
 });
 
