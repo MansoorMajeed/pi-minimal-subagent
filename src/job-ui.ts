@@ -2,7 +2,6 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, SelectList, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./activity.ts";
 import { type JobSnapshot, type JobRegistry } from "./jobs.ts";
-import { summarize } from "./result-summary.ts";
 import { activityTimingText, buildStatusRows, completionOutcome, singleLineStatusText } from "./status-layout.ts";
 
 function line(text: string, width: number): string {
@@ -42,11 +41,13 @@ function detailsLines(job: JobSnapshot): string[] {
 		lines.push("", "Results:");
 		for (const result of completed) {
 			const outcome = completionOutcome(result);
-			lines.push(`${result.agent}: ${outcome.label}${outcome.detail ? ` · ${outcome.detail}` : ""}`);
+			lines.push("", `${result.agent}: ${outcome.label}`, `Goal: ${result.activity.goal}`);
+			if (result.inlineAnswer) lines.push(result.inlineAnswer);
+			if (result.error) lines.push(`Diagnostic: ${result.error}`);
+			lines.push(`Log: ${result.logPath}`);
 			if (result.outputPath) lines.push(`Output: ${result.outputPath}`);
 			if (result.sessionPath) lines.push(`Session: ${result.sessionPath}`);
 		}
-		lines.push(...summarize(completed).split("\n"));
 	}
 	return lines.flatMap((text) => sanitizeTerminalText(text).split("\n"));
 }

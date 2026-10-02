@@ -359,6 +359,37 @@ test("already cancelling and retained terminal entries offer only details", asyn
 	owner.abort();
 });
 
+test("cancelled details use consistent human outcomes while preserving answers, diagnostics and artifacts", async () => {
+	const { jobs, gates } = setup();
+	await tick();
+	const cancelled = { ...result("agent-0"), ok: false, error: "aborted by user\nfull diagnostic", answer: "partial handoff", inlineAnswer: "partial handoff" };
+	cancelled.activity.state = "aborted";
+	gates.get("agent-0")!.resolve(cancelled);
+	await tick();
+	const before = structuredClone(jobs.get("job-0"));
+	const screen = ui(6);
+	const owner = new AbortController();
+	const command = showJobPicker(screen.ctx, jobs, owner.signal);
+	screen.views[0].handleInput("\r");
+	await tick();
+	screen.selects[0].resolve("View details");
+	await tick();
+	const view = screen.views[1];
+	const seen = new Set<string>();
+	for (let i = 0; i < 60; i++) {
+		for (const line of view.render(80)) seen.add(line);
+		view.handleInput("\x1b[B");
+	}
+	const all = [...seen].join("\n");
+	assert.match(all, /agent-0: cancelled/);
+	assert.doesNotMatch(all, /FAILED/);
+	for (const expected of ["partial handoff", "aborted by user", "full diagnostic", "agent-0.jsonl", "agent-0-output.md", "agent-0.session"]) assert.ok(all.includes(expected), expected);
+	assert.deepEqual(jobs.get("job-0"), before, "human rendering must not change stored/model-facing results");
+	view.handleInput("\x1b");
+	await command;
+	owner.abort();
+});
+
 test("active multi-task details retain settled child answers and paths without waiting for whole job", async () => {
 	const gates = new Map<string, ReturnType<typeof deferred<ReturnType<typeof result>>>>();
 	const jobs = new JobRegistry({ runner: async (opts: { label: string }) => {
