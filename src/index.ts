@@ -14,6 +14,7 @@ import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { BackgroundUI } from "./background-ui.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { JobRegistry, type JobHandle } from "./jobs.ts";
+import { showJobPicker } from "./job-ui.ts";
 import { loadModelGuide, searchModels } from "./model-guidance.ts";
 import { summarize } from "./result-summary.ts";
 import type { SubagentResult } from "./spawn.ts";
@@ -81,6 +82,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	let jobs = new JobRegistry();
 	let generation = 0;
 	let runtimeAlive = false;
+	let commandUIAbort = new AbortController();
 	let sessionId: string | undefined;
 	let completionSubmitted = new Set<string>();
 	let deliveryErrors = new Map<string, string>();
@@ -142,6 +144,8 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		commandUIAbort.abort();
+		commandUIAbort = new AbortController();
 		if (deliveryCheck !== undefined) clearImmediate(deliveryCheck);
 		deliveryCheck = undefined;
 		jobs = new JobRegistry();
@@ -177,12 +181,20 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		if (deliveryCheck !== undefined) clearImmediate(deliveryCheck);
 		deliveryCheck = undefined;
 		runtimeAlive = false;
+		commandUIAbort.abort();
 		runtimeContext = undefined;
 		unsubscribeBackground?.();
 		unsubscribeBackground = undefined;
 		backgroundUI?.dispose();
 		backgroundUI = undefined;
 		await jobs.dispose();
+	});
+	pi.registerCommand("subagents", {
+		description: "Inspect or cancel current-session background subagent jobs",
+		handler: async (_args, ctx) => {
+			if (!runtimeAlive) return;
+			await showJobPicker(ctx, jobs, commandUIAbort.signal);
+		},
 	});
 	pi.registerCommand("subagent-cancel", {
 		description: "Cancel one background subagent job by exact ID",

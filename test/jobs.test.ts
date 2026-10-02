@@ -73,7 +73,12 @@ test("one registry shares four slots across simultaneous sync and background job
 	pending.get("a")!.resolve(result(child("a").options));
 	await flush();
 	assert.deepEqual(started, ["a", "b", "c", "d", "e", "f"]);
-	for (const name of ["c", "d", "e", "f"]) pending.get(name)!.resolve(result(child(name).options));
+	pending.get("d")!.resolve(result(child("d").options));
+	await flush();
+	assert.deepEqual(registry.get("async")?.completedResults?.map((item) => item.agent), ["d"]);
+	assert.equal(registry.get("async")?.results, undefined);
+	assert.equal(registry.get("async")?.paths?.[0].logPath, "/tmp/d.jsonl");
+	for (const name of ["c", "e", "f"]) pending.get(name)!.resolve(result(child(name).options));
 	assert.deepEqual((await first.completion).map((item) => item.agent), ["a", "b", "c"]);
 	assert.deepEqual((await second.completion).map((item) => item.agent), ["d", "e", "f"]);
 	assert.equal(registry.activeCount, 0);
@@ -175,6 +180,36 @@ test("terminal retention drops blocking records and keeps only background status
 	assert.equal(snapshot.activities[0].task, "");
 	assert.equal(snapshot.results![0].activity.task, "");
 	assert.match(snapshot.results![0].answer, /answer async/);
+});
+
+test("background enumeration keeps active submission order and terminal reverse submission order", async () => {
+	const gates = new Map<string, ReturnType<typeof deferred<SubagentResult>>>();
+	const registry = new JobRegistry({ maxConcurrency: 1, runner: async (options) => {
+		const gate = deferred<SubagentResult>();
+		gates.set(options.label, gate);
+		return gate.promise;
+	} });
+	const first = registry.submit({ id: "first", runDir: "/tmp/first", background: true, children: [child("first")] });
+	const second = registry.submit({ id: "second", runDir: "/tmp/second", background: true, children: [child("second")] });
+	const blocking = registry.submit({ id: "blocking", runDir: "/tmp/blocking", background: false, children: [child("blocking")] });
+	const third = registry.submit({ id: "third", runDir: "/tmp/third", background: true, children: [child("third")] });
+	assert.deepEqual(registry.listBackground().map((job) => job.id), ["first", "second", "third"]);
+	const cancelling = registry.cancel("third"); // cancelled before launch
+	await cancelling;
+	assert.deepEqual(registry.listBackground().map((job) => job.id), ["first", "second", "third"]);
+	await flush();
+	gates.get("first")!.resolve(result(child("first").options));
+	await first.completion;
+	await flush();
+	assert.deepEqual(registry.listBackground().map((job) => job.id), ["second", "third", "first"]);
+	gates.get("second")!.resolve(result(child("second").options));
+	await second.completion;
+	await flush();
+	gates.get("blocking")!.resolve(result(child("blocking").options));
+	await blocking.completion;
+	assert.deepEqual(registry.listBackground().map((job) => job.id), ["third", "second", "first"]);
+	assert.deepEqual(registry.listActiveBackground(), []);
+	await third.completion;
 });
 
 test("disposal closes admission, aborts queued work, and waits for active settlement", async () => {

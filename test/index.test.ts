@@ -445,6 +445,78 @@ test("tool and slash cancellation report when natural completion already won", {
 	}
 });
 
+test("subagents command rejects non-TUI use and reports an empty current runtime", async () => {
+	const { commands, handlers, messages } = registeredRuntime();
+	const command = commands.get("subagents");
+	assert.ok(command, "human job picker is registered");
+	const notifications: string[] = [];
+	const ctx = { cwd: harnessDir, mode: "tui", sessionManager: { getSessionId: () => "picker-empty" }, ui: { notify: (message: string) => notifications.push(message) } };
+	await handlers.get("session_start")?.[0]?.({}, ctx);
+	for (const mode of ["print", "json", "rpc"]) {
+		await command.handler("", { ...ctx, mode });
+		assert.match(notifications.at(-1)!, /TUI/);
+	}
+	await command.handler("", ctx);
+	assert.match(notifications.at(-1)!, /no.*background.*jobs/i);
+	assert.equal(messages.length, 0);
+	await handlers.get("session_shutdown")?.[0]?.({}, ctx);
+});
+
+test("subagents picker closes on shutdown and stale callbacks cannot touch a replacement context", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-picker-shutdown-"));
+	const oldPath = process.env.PATH;
+	process.env.PATH = `${fakePi(dir, "setTimeout(() => {}, 10000);")}${path.delimiter}${oldPath ?? ""}`;
+	const { commands, handlers, tool, messages } = registeredRuntime();
+	assert.ok(commands.get("subagents"));
+	let invalid = false;
+	let staleAccesses = 0;
+	let view: any;
+	let doneView: any;
+	let customCalls = 0;
+	let resolveOpened!: () => void;
+	const opened = new Promise<void>((resolve) => { resolveOpened = resolve; });
+	const ui = {
+		notify() { throw new Error("no notification expected"); },
+		custom(factory: any) {
+			customCalls++;
+			return new Promise((resolve) => {
+				doneView = resolve;
+				view = factory({ terminal: { rows: 24 }, requestRender() {} }, fakeTheme(), { matches: () => false }, resolve);
+				assert.ok(view.render(80).join("\n").includes("Inspect auth"));
+				resolveOpened();
+			});
+		},
+	};
+	const ctx = {
+		cwd: harnessDir, mode: "tui", sessionManager: { getSessionId: () => "picker-old" },
+		get ui() { if (invalid) { staleAccesses++; throw new Error("stale context"); } return ui; },
+	};
+	try {
+		await handlers.get("session_start")?.[0]?.({}, ctx);
+		const receipt = await tool.execute("launch", { tasks: [{ agent: "worker", label: "Inspect auth", task: "wait" }] }, undefined, undefined, ctx);
+		const pendingCommand = commands.get("subagents").handler("", ctx);
+		await opened;
+		await handlers.get("session_shutdown")?.[0]?.({}, ctx);
+		invalid = true;
+		await pendingCommand;
+		doneView(receipt.details.jobId);
+		view.handleInput?.("\r");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(staleAccesses, 0);
+		assert.equal(messages.length, 0);
+		assert.equal(customCalls, 1);
+		const notices: string[] = [];
+		const fresh = { cwd: harnessDir, mode: "tui", sessionManager: { getSessionId: () => "picker-new" }, ui: { notify: (text: string) => notices.push(text) } };
+		await handlers.get("session_start")?.[0]?.({}, fresh);
+		await commands.get("subagents").handler("", fresh);
+		assert.match(notices.at(-1)!, /no.*background.*jobs/i);
+		await handlers.get("session_shutdown")?.[0]?.({}, fresh);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("session replacement warns without cancelling until committed shutdown", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-async-lifecycle-"));
 	const oldPath = process.env.PATH;
