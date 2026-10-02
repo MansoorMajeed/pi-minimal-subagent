@@ -3,7 +3,7 @@
 Choose by task difficulty, not agent name. Explicit user choices override these defaults.
 
 - `gpt-6-luna`: Scouting, bounded investigation, and mechanical implementation with precise instructions. Consider `:xhigh` for implementation.
-- `gpt-5.6-sol`: Substantive implementation, debugging, review, and tasks needing judgment.
+- `gpt-6.1-sol`: Substantive implementation, debugging, review, and tasks needing judgment.
 - `gpt-6-astra`: Exceptionally difficult analysis, oracle consultations, and independent second opinions. Never implementation; most expensive, not merely for important tasks.
 
 ## Provider and resolution
