@@ -647,6 +647,23 @@ test("completion outcomes distinguish limits, cancellation and diagnostics witho
 	assert.doesNotMatch(text, /after|NaN|undefined/);
 });
 
+test("partial generic failures keep their diagnostic visible on narrow completion cards", () => {
+	const renderer = registeredRuntime().renderers.get("minimal-subagent-complete");
+	const activity = createActivity("worker", "test/model", { goal: "Inspect authentication" });
+	activity.state = "failed";
+	const result = { ok: false, answer: "A useful partial answer", inlineAnswer: "A useful partial answer", error: "\x1b[2JNo API key\nlong secondary diagnostic", activity };
+	const message = { details: { jobId: "partial-failure", activities: [activity], results: [result] } };
+	const component = renderer(message, { expanded: false }, fakeTheme());
+	for (const width of [24, 32]) {
+		const lines = component.render(width);
+		assert.match(lines[1], /No API key/);
+		assert.ok(lines.every((line: string) => visibleWidth(line) <= width));
+		assert.doesNotMatch(lines.join("\n"), /\x1b\[2J|secondary diagnostic/);
+	}
+	assert.match(component.render(100).join("\n"), /No API key.*partial output available/);
+	assert.equal(result.error, "\x1b[2JNo API key\nlong secondary diagnostic");
+});
+
 test("cancelled cards and completions use neutral presentation even when limit flags overlap", () => {
 	const activity = createActivity("worker");
 	activity.state = "aborted";

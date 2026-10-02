@@ -77,11 +77,11 @@ export function completionOutcome(result?: Partial<SubagentResult>, activity = r
 		label = `turn limit reached${activity?.maxTurns ? ` (${activity.maxTurns})` : ""}`;
 	} else label = "failed";
 	const details: string[] = [];
-	if (result?.answer?.trim() || result?.inlineAnswer?.trim()) details.push("partial output available");
 	if (label === "failed" && result?.error) {
 		const firstLine = sanitizeTerminalText(result.error).split(/\r?\n/).find((line) => line.trim());
 		if (firstLine) details.push(singleLineStatusText(firstLine));
 	}
+	if (result?.answer?.trim() || result?.inlineAnswer?.trim()) details.push("partial output available");
 	return { label, icon: state === "aborted" ? "○" : "✗", color: state === "aborted" ? "dim" : "error", detail: details.join(" · ") || undefined };
 }
 
