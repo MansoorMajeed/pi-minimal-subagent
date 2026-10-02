@@ -300,6 +300,29 @@ test("completion winning during cancellation settlement reports success and poin
 	owner.abort();
 });
 
+test("natural failures and limits winning cancellation settlement retain their true outcome", async () => {
+	for (const state of ["failed", "timed_out", "turn_limit"]) {
+		const { jobs, gates } = setup();
+		const screen = ui();
+		const owner = new AbortController();
+		const command = showJobPicker(screen.ctx, jobs, owner.signal);
+		screen.views[0].handleInput("\r");
+		await tick();
+		screen.selects[0].resolve("Cancel job");
+		await tick();
+		const failure = { ...result("agent-0"), ok: false, error: "No API key", timedOut: state === "timed_out", turnLimitExceeded: state === "turn_limit" };
+		failure.activity.state = state;
+		gates.get("agent-0")!.resolve(failure);
+		screen.confirms[0].resolve(true);
+		await command;
+		assert.equal(jobs.get("job-0")?.cancelRequested, true, "exercise the cancellation/settlement gap");
+		assert.equal(jobs.get("job-0")?.results[0].activity.state, state);
+		assert.match(screen.notices.join("\n"), /finished before cancellation took effect.*\/subagents/);
+		assert.doesNotMatch(screen.notices.join("\n"), /cancelled|successfully/);
+		owner.abort();
+	}
+});
+
 test("already cancelling and retained terminal entries offer only details", async () => {
 	const { jobs, gates } = setup();
 	const owner = new AbortController();
