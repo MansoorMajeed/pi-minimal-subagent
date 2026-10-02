@@ -1,4 +1,5 @@
 import { sanitizeTerminalText, type ActivityState, type ChildActivity, type UsageSummary } from "./activity.ts";
+import type { SubagentResult } from "./spawn.ts";
 
 export interface StatusHeaderRow {
 	kind: "header";
@@ -55,6 +56,33 @@ export function activityTimingText(activity: ChildActivity, now = Date.now()): s
 		return `Elapsed ${formatDuration(now - activity.startedAt)}${timeout} · ${formatTurns(activity)}`;
 	}
 	return `Elapsed ${formatDuration(activity.endedAt - activity.startedAt)} · ${formatTurns(activity)}`;
+}
+
+/** Human-facing only: preserve the runner's cancellation precedence and raw results. */
+export function completionOutcome(result?: Partial<SubagentResult>, activity = result?.activity): {
+	label: string; icon: string; color: "success" | "dim" | "error"; detail?: string;
+} {
+	const state = activity?.state;
+	if (result?.ok === true || result?.ok === undefined && state === "done") {
+		return { label: "succeeded", icon: "✓", color: "success" };
+	}
+	let label: string;
+	if (state === "aborted") label = "cancelled";
+	else if (result?.timedOut || state === "timed_out") {
+		label = "timed out";
+		if (activity?.startedAt !== undefined && activity.endedAt !== undefined) {
+			label += ` after ${formatDuration(activity.endedAt - activity.startedAt)}`;
+		}
+	} else if (result?.turnLimitExceeded || state === "turn_limit") {
+		label = `turn limit reached${activity?.maxTurns ? ` (${activity.maxTurns})` : ""}`;
+	} else label = "failed";
+	const details: string[] = [];
+	if (result?.answer?.trim() || result?.inlineAnswer?.trim()) details.push("partial output available");
+	if (label === "failed" && result?.error) {
+		const firstLine = sanitizeTerminalText(result.error).split(/\r?\n/).find((line) => line.trim());
+		if (firstLine) details.push(singleLineStatusText(firstLine));
+	}
+	return { label, icon: state === "aborted" ? "○" : "✗", color: state === "aborted" ? "dim" : "error", detail: details.join(" · ") || undefined };
 }
 
 export function buildStatusRows(activities: ChildActivity[], now = Date.now()): StatusRow[] {

@@ -544,6 +544,54 @@ test("collapsed completion renderer leads with each task goal and keeps the job 
 	assert.ok(narrowLines.every((line: string) => visibleWidth(line) <= 24));
 });
 
+test("completion outcomes distinguish limits, cancellation and diagnostics without hiding them behind long goals", () => {
+	const { renderers } = registeredRuntime();
+	const renderer = renderers.get("minimal-subagent-complete");
+	const cases = [
+		{ state: "timed_out", result: { timedOut: true, answer: "partial", error: "timed out" }, expected: /timed out after 30m 0s/, detail: /partial output available/ },
+		{ state: "turn_limit", result: { turnLimitExceeded: true }, expected: /turn limit reached \(12\)/ },
+		{ state: "aborted", result: { timedOut: true, turnLimitExceeded: true, answer: "handoff" }, expected: /cancelled/, detail: /partial output available/ },
+		{ state: "failed", result: { error: "\x1b[2JNo API key\nfull second diagnostic line" }, expected: /failed/, detail: /No API key/ },
+		{ state: "timed_out", result: {}, expected: /timed out after 30m 0s/ },
+	];
+	for (const { state, result, expected, detail } of cases) {
+		const activity = createActivity("worker", "test/model", { task: "full task", goal: "Review authentication ".repeat(20), startedAt: 1000, endedAt: 1801000, maxTurns: 12 });
+		activity.state = state;
+		const input = { content: "unchanged", details: { jobId: "outcome-job", activities: [activity], results: [{ ok: false, ...result }] } };
+		const before = structuredClone(input);
+		const component = renderer(input, { expanded: false }, fakeTheme());
+		const lines = component.render(60);
+		assert.match(lines[0], expected);
+		if (detail) assert.match(lines[1], detail);
+		else assert.doesNotMatch(lines.join("\n"), /partial output/);
+		assert.doesNotMatch(lines.join("\n"), /\x1b\[2J|full second/);
+		for (const width of [1, 12, 60]) assert.ok(component.render(width).every((line: string) => visibleWidth(line) <= width));
+		assert.deepEqual(input, before, "presentation never rewrites stored results");
+		if (state === "failed") assert.match(renderer(input, { expanded: true }, fakeTheme()).render(100).join("\n"), /full second diagnostic line/);
+	}
+	const legacy = { details: { jobId: "legacy", activities: [{ ...createActivity("worker"), state: "timed_out" }] } };
+	const text = renderer(legacy, { expanded: false }, fakeTheme()).render(100).join("\n");
+	assert.match(text, /timed out/);
+	assert.doesNotMatch(text, /after|NaN|undefined/);
+});
+
+test("cancelled cards and completions use neutral presentation even when limit flags overlap", () => {
+	const activity = createActivity("worker");
+	activity.state = "aborted";
+	const colors: string[] = [];
+	const theme = { fg: (color: string, text: string) => { colors.push(color); return text; }, bold: (text: string) => text };
+	const rows = new SubagentStatusComponent(buildStatusRows([activity]), undefined, theme).render(100);
+	assert.match(rows[0], /cancelled/);
+	assert.doesNotMatch(rows[0], /✗|aborted/);
+	assert.ok(!colors.includes("error"));
+	colors.length = 0;
+	const renderer = registeredRuntime().renderers.get("minimal-subagent-complete");
+	const text = renderer({ details: { activities: [activity], results: [{ ok: false, timedOut: true }] } }, { expanded: false }, theme).render(100).join("\n");
+	assert.match(text, /cancelled/);
+	assert.doesNotMatch(text, /timed out|✗/);
+	assert.ok(!colors.includes("error"));
+});
+
 test("busy completions wait for agent settlement and shutdown wins the deferred delivery race", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-pending-delivery-"));
 	const oldPath = process.env.PATH;

@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
@@ -18,7 +18,7 @@ import { loadModelGuide, searchModels } from "./model-guidance.ts";
 import { summarize } from "./result-summary.ts";
 import type { SubagentResult } from "./spawn.ts";
 import { expandedTaskText, SubagentStatusComponent } from "./status-render.ts";
-import { activityTimingText, buildStatusRows, singleLineStatusText } from "./status-layout.ts";
+import { activityTimingText, buildStatusRows, completionOutcome, singleLineStatusText } from "./status-layout.ts";
 
 export { BackgroundUI, SubagentStatusComponent };
 
@@ -212,15 +212,23 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			return new Text(`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("dim", id)}`, 0, 0);
 		}
 		if (!expanded) {
-			const lines = details.activities.map((activity, index) => {
-				const succeeded = details.results?.[index]?.ok === true;
-				const outcome = succeeded ? "succeeded" : "failed";
-				const presentation = succeeded ? { icon: "✓", color: "success" } : { icon: "✗", color: "error" };
-				return `${theme.fg(presentation.color, presentation.icon)} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(activity.goal)))} ${theme.fg(presentation.color, outcome)}`;
-			});
-			lines.push(theme.fg("dim", `  job ${id}`));
 			return {
-				render: (width: number) => lines.map((line) => truncateToWidth(line, Math.max(1, width), "…")),
+				render(width: number) {
+					const available = Math.max(1, width);
+					const lines = details.activities.flatMap((activity, index) => {
+						const outcome = completionOutcome(details.results?.[index], activity);
+						const icon = theme.fg(outcome.color, outcome.icon);
+						const label = theme.fg(outcome.color, outcome.label);
+						const goalWidth = available - visibleWidth(`${outcome.icon}  ${outcome.label}`);
+						const goal = goalWidth > 1 ? truncateToWidth(singleLineStatusText(activity.goal), goalWidth, "…") : "";
+						const headline = goal
+							? `${icon} ${theme.fg("toolTitle", theme.bold(goal))} ${label}`
+							: `${icon} ${label}`;
+						return outcome.detail ? [headline, theme.fg("muted", `  ${outcome.detail}`)] : [headline];
+					});
+					lines.push(theme.fg("dim", `  job ${singleLineStatusText(id)}`));
+					return lines.map((line) => truncateToWidth(line, available, "…"));
+				},
 				invalidate() {},
 			};
 		}
