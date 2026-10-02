@@ -18,7 +18,7 @@ import { loadModelGuide, searchModels } from "./model-guidance.ts";
 import { summarize } from "./result-summary.ts";
 import type { SubagentResult } from "./spawn.ts";
 import { expandedTaskText, SubagentStatusComponent } from "./status-render.ts";
-import { activityTimingText, buildStatusRows } from "./status-layout.ts";
+import { activityTimingText, buildStatusRows, singleLineStatusText } from "./status-layout.ts";
 
 export { BackgroundUI, SubagentStatusComponent };
 
@@ -53,6 +53,7 @@ interface SubagentDetails {
 	jobId?: string;
 	state?: string;
 	statusSnapshot?: boolean;
+	backgroundReceipt?: boolean;
 	activities: ChildActivity[];
 	results?: SubagentResult[];
 }
@@ -412,7 +413,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const goals = snapshot.activities.map((activity, index) => `[${index + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
 				return {
 					content: [{ type: "text" as const, text: `Subagent job ${runId} accepted and continues in the background. Completion arrives automatically; do not poll.\n${goals}\nArtifacts: ${runDir}` }],
-					details: { runDir, jobId: runId, state: snapshot.state, activities: snapshot.activities } satisfies SubagentDetails,
+					details: { runDir, jobId: runId, state: snapshot.state, backgroundReceipt: true, activities: snapshot.activities } satisfies SubagentDetails,
 				};
 			}
 			let lastUpdateAt = 0;
@@ -472,6 +473,22 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 
 		renderResult(result: any, { expanded, isPartial }: any, theme: any) {
 			const details = result.details as SubagentDetails | undefined;
+			if (details?.backgroundReceipt) {
+				return {
+					render(width: number) {
+						const count = details.activities.length;
+						const lines = [
+							theme.fg("muted", `Started ${count} background task${count === 1 ? "" : "s"}`),
+							...details.activities.map((activity) => `  ${singleLineStatusText(activity.goal)}`),
+							theme.fg("dim", `  job ${singleLineStatusText(details.jobId)}`),
+						].map((line) => truncateToWidth(line, Math.max(1, width), "…"));
+						if (!expanded) return lines;
+						const text = `${expandedTaskText(details.activities)}\n\nArtifacts: ${details.runDir}`;
+						return [...lines, "", ...new Text(sanitizeTerminalText(text), 0, 0).render(Math.max(1, width))];
+					},
+					invalidate() {},
+				};
+			}
 			if (details?.statusSnapshot) {
 				const text = sanitizeTerminalText(result.content?.find((item: any) => item.type === "text")?.text ?? "");
 				if (expanded) return details.activities.some((activity) => activity.task)

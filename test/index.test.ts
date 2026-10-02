@@ -224,6 +224,41 @@ test("status component keeps six sanitized width-bounded rows", () => {
 	assert.ok(lines.every((line) => !line.includes("\x1b[2J")));
 });
 
+test("marked background receipts stay historical, compact and width-safe even when expanded", () => {
+	const tool = registeredTool();
+	const activities = ["running", "queued"].map((state, index) => {
+		const activity = createActivity("worker", "test/model", {
+			task: `Full task ${index}\nsecond line`, goal: `Goal ${index} 界界界\nunsafe\x1b[2J`,
+			startedAt: 1000, deadlineAt: 5000,
+		});
+		activity.state = state;
+		activity.recent = ["bash secret activity"];
+		return activity;
+	});
+	const result = { content: [{ type: "text", text: "original model receipt" }], details: {
+		backgroundReceipt: true, jobId: "receipt-1", runDir: "/tmp/receipt", activities,
+	} };
+	const render = (expanded: boolean, width = 100) => tool.renderResult(result, { expanded, isPartial: false }, fakeTheme()).render(width);
+	const initial = render(false);
+	assert.equal(initial.length, 4);
+	assert.match(initial[0], /Started 2 background tasks/);
+	assert.match(initial[1], /Goal 0/);
+	assert.match(initial[2], /Goal 1/);
+	assert.match(initial[3], /receipt-1/);
+	assert.doesNotMatch(initial.join("\n"), /running|queued|Elapsed|timeout|Reported|secret activity|\x1b/);
+	for (const activity of activities) { activity.state = "done"; activity.endedAt = 3000; }
+	assert.deepEqual(render(false), initial, "historical receipt does not change with runtime status");
+	for (const width of [1, 12, 40]) assert.ok(render(false, width).every((line: string) => visibleWidth(line) <= width));
+	const expanded = render(true).join("\n");
+	assert.match(expanded, /Full task 0\s*\nsecond line/);
+	assert.match(expanded, /Artifacts: \/tmp\/receipt/);
+	assert.doesNotMatch(expanded, /Elapsed|timeout|Reported|secret activity|\x1b/);
+	const single = { ...result, details: { ...result.details, activities: activities.slice(0, 1) } };
+	assert.match(tool.renderResult(single, { expanded: false }, fakeTheme()).render(100)[0], /Started 1 background task$/);
+	const unmarked = { ...result, details: { ...result.details, backgroundReceipt: undefined } };
+	assert.equal(tool.renderResult(unmarked, { expanded: false }, fakeTheme()).render(100).length, 12, "legacy results keep their existing rendering");
+});
+
 test("expanded rendering exposes full tasks while running and preserves completed output", () => {
 	const tool = registeredTool();
 	const activity = createActivity("worker", "provider/model", {
@@ -267,6 +302,7 @@ test("TUI defaults to background while non-TUI defaults to blocking and rejects 
 		assert.match(receipt.content[0].text, /continues in the background/i);
 		assert.ok(receipt.details.jobId);
 		assert.equal(receipt.details.results, undefined);
+		assert.equal(receipt.details.backgroundReceipt, true);
 
 		const blocking = await tool.execute("blocking-call", { tasks: [{ agent: "worker", task: "blocking" }], async: false }, undefined, undefined, ctx("tui"));
 		assert.match(blocking.content[0].text, /worker — ok/i);
@@ -314,7 +350,7 @@ test("background status and cancellation require exact IDs and the direct comman
 		assert.match(expanded, /Artifacts: \/tmp\/pi-minsub/);
 		assert.match(expanded, /worker — queued — first goal — queued — Queued/);
 		assert.match(expanded, /first detailed instructions/);
-		assert.equal(tool.renderResult(one, { expanded: false, isPartial: false }, fakeTheme()).render(80).length, 6);
+		assert.equal(tool.renderResult(one, { expanded: false, isPartial: false }, fakeTheme()).render(80).length, 3);
 		await assert.rejects(() => tool.execute("bad", { action: "status", id: one.details.jobId.slice(0, 4) }, undefined, undefined, ctx), /Unknown/);
 		await assert.rejects(() => tool.execute("missing", { action: "cancel" }, undefined, undefined, ctx), /requires.*id/i);
 
