@@ -1,5 +1,5 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, SelectList, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey, SelectList, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./activity.ts";
 import { type JobSnapshot, type JobRegistry } from "./jobs.ts";
 import { summarize } from "./result-summary.ts";
@@ -7,6 +7,16 @@ import { activityTimingText, buildStatusRows, completionOutcome, singleLineStatu
 
 function line(text: string, width: number): string {
 	return truncateToWidth(sanitizeTerminalText(text), Math.max(1, width), "…");
+}
+
+function selectedIdLine(id: string, width: number): string {
+	const available = Math.max(1, width);
+	const clean = singleLineStatusText(id);
+	if (visibleWidth(`ID: ${clean}`) <= available) return `ID: ${clean}`;
+	// Generated job IDs share a timestamp prefix: retain their distinguishing tail.
+	const prefix = available >= 9 ? "ID: " : "";
+	const tailWidth = available - prefix.length - 1;
+	return line(`${prefix}…${sliceByColumn(clean, Math.max(0, visibleWidth(clean) - tailWidth), tailWidth, true)}`, available);
 }
 
 function detailsLines(job: JobSnapshot): string[] {
@@ -103,7 +113,7 @@ async function pickJob(ctx: ExtensionCommandContext, jobs: JobSnapshot[], signal
 				const height = Math.max(1, tui.terminal.rows);
 				const header = height >= 4 ? [line("Background subagent jobs", width)] : [];
 				const hint = height >= 5 ? [line("↑↓ PgUp PgDn Home End · Enter · Esc", width)] : [];
-				const id = line(`ID: ${list.getSelectedItem()?.value ?? ""}`, width);
+				const id = selectedIdLine(list.getSelectedItem()?.value ?? "", width);
 				if (height === 1) return [id];
 				const entries = list.render(Math.max(1, width));
 				// At two or three rows there is no room for the optional scroll-indicator row.

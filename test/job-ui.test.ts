@@ -113,6 +113,29 @@ test("real SelectList scrolls all jobs, preserves exact ID through resize, and b
 	owner.abort();
 });
 
+test("narrow picker preserves distinguishing ID suffixes for duplicate goals and timestamp prefixes", async () => {
+	const jobs = new JobRegistry({ runner: async () => new Promise(() => {}) });
+	for (const id of ["muesjk3-a1b2", "muesjk3-b1b2"]) {
+		jobs.submit({ id, runDir: `/tmp/${id}`, background: true, children: [child("worker", "Identical task goal")] });
+	}
+	const screen = ui(6);
+	const owner = new AbortController();
+	const command = showJobPicker(screen.ctx, jobs, owner.signal);
+	const picker = screen.views[0];
+	const first = picker.render(12);
+	assert.match(first.join("\n"), /a1b2/);
+	picker.handleInput("\x1b[B");
+	const second = picker.render(12);
+	assert.match(second.join("\n"), /b1b2/);
+	assert.ok([...first, ...second].every((line) => visibleWidth(line) <= 12));
+	picker.handleInput("\r");
+	await tick();
+	assert.equal(screen.selects[0].title, "Job muesjk3-b1b2", "display clipping never changes the exact action ID");
+	screen.selects[0].resolve(undefined);
+	await command;
+	owner.abort();
+});
+
 test("picker Home/End/Page navigation selects duplicate-goal jobs by exact ID", async () => {
 	const { jobs } = setup(25);
 	const screen = ui(7);
