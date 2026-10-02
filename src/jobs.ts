@@ -29,6 +29,8 @@ export interface JobSnapshot {
 	state: JobState;
 	cancelRequested: boolean;
 	activities: ChildActivity[];
+	paths?: { logPath: string; sessionPath?: string }[];
+	completedResults?: SubagentResult[];
 	results?: SubagentResult[];
 }
 
@@ -159,6 +161,17 @@ export class JobRegistry {
 			.map((job) => this.snapshot(job));
 	}
 
+	listBackground(): JobSnapshot[] {
+		const active: JobSnapshot[] = [];
+		const terminal: JobSnapshot[] = [];
+		for (const job of this.jobs.values()) {
+			if (!job.background) continue;
+			if (job.terminal) terminal.push(this.snapshot(job));
+			else active.push(this.snapshot(job));
+		}
+		return [...active, ...terminal.reverse()];
+	}
+
 	async cancel(id: string): Promise<CancelResult> {
 		const job = this.jobs.get(id);
 		if (!job) throw new Error(`Unknown subagent job id: ${id}`);
@@ -272,6 +285,12 @@ export class JobRegistry {
 			state,
 			cancelRequested: job.cancelRequested,
 			activities: job.children.map((child) => snapshotActivity(child.activity)),
+			paths: job.children.map((child) => ({ logPath: child.options!.logPath, sessionPath: child.options!.sessionPath })),
+			completedResults: job.children.flatMap((child) => child.result ? [{
+				...child.result,
+				activity: snapshotActivity(child.result.activity),
+				usage: { ...child.result.usage },
+			}] : []),
 			results: job.terminal ? job.children.map((child) => child.result!) : undefined,
 		};
 	}

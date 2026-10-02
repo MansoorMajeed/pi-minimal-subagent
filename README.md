@@ -85,12 +85,28 @@ instructions.
 | Print / JSON / RPC | Blocking result | Rejected before launch | Blocking result |
 
 Only active background jobs appear in status without an ID. Exact-ID status also
-retains terminal results for the current session runtime. Cancellation is also
-available directly while the parent is busy:
+retains terminal results for the current session runtime. Human controls are also available directly while the parent is busy:
 
 ```text
+/subagents
 /subagent-cancel <exact-job-id>
 ```
+
+`/subagents` opens a bounded, scrollable TUI picker: active background jobs first,
+then retained terminal jobs, newest-submitted first. Choose a job by its goals and
+state; its ID (or distinguishing suffix on narrow screens) stays visible to
+distinguish duplicate or clipped goals.
+Select **View details** for a read-only snapshot, or **Cancel job** for a confirmation
+that reminds you file edits are not undone. Jobs that finish while you decide are
+reported as already finished rather than cancelled.
+
+Use arrows, Page Up/Down, and Home/End to navigate; Escape closes the view without
+cancelling work. Details include activity, available task instructions, inline
+results, and artifact paths. Reopen to refresh a snapshot. Original task instructions
+are not retained in terminal job snapshots. These controls cover only this session
+runtime: reload/replacement clears the list, and opening the picker never adds
+model messages or changes your prompt. The picker requires TUI mode; exact-ID
+tool controls remain available in other modes.
 
 Cancellation does not roll back file edits. Tasks in one call must be independent,
 and concurrent parent/child or child/child writes must own non-overlapping files
@@ -98,7 +114,8 @@ unless external isolation is used.
 
 ## Progress display
 
-Each child keeps the same six-row status tail in any terminal or multiplexer:
+Live widget cards and blocking tool results use the same six-row status tail per
+child in any terminal or multiplexer:
 
 ```text
 ● scout running model: anthropic/claude-haiku-4-5 [12,400 tok · $0.0310]
@@ -109,22 +126,43 @@ Each child keeps the same six-row status tail in any terminal or multiplexer:
   ↳ bash git diff --stat
 ```
 
-The status always uses exactly six display rows per child: a header, goal,
+These status cards use exactly six display rows per child: a header, goal,
 elapsed/timeout budget, latest reported milestone, and the two latest observed
 activities. Missing rows are padded above the activity tail. Queued children do
 not accrue runtime; terminal elapsed time freezes. An explicit turn cap appears
 as, for example, `17/80 turns`. The timeout countdown is a hard execution budget,
 not an ETA.
 
+Background launch entries are compact **historical receipts**, not live cards:
+
+```text
+Started 2 background tasks
+  Test installer on Debian 13
+  Verify systemd shutdown
+  job muesjk3-wifc
+```
+
+They never show a stale running state or timer. Expand a receipt with `Ctrl+O` for
+the full assigned tasks and artifact directory; live progress stays in the widget.
+Previously saved, unmarked receipts retain their original rendering.
+
 The optional task `label` is display-only. Without one, the goal is a clipped
-single-line preview of the task. Collapsed completion messages lead with each goal
-and its outcome, with the internal job ID shown afterward as secondary metadata:
+single-line preview of the task. Collapsed completion messages show each goal and
+its outcome, reserving room for the outcome when goals are long. The internal job
+ID appears afterward as secondary metadata:
 
 ```text
 ✓ Test installer on Debian 13 succeeded
-✗ Verify systemd shutdown failed
+✗ Verify systemd shutdown timed out after 30m 0s
+  partial output available
   job muesjk3-wifc
 ```
+
+Timeouts, turn limits, and generic failures have distinct labels. Failed children
+show a clipped first diagnostic line; unsuccessful children with an answer show
+`partial output available`. Expand for the full returned answer/diagnostic.
+Cancelled status cards use a neutral icon and color, not an error marker; explicit
+cancellation still suppresses automatic completion messages.
 
 The complete original task remains available in expanded view while the child is
 running. `Ctrl+O` shows assigned tasks and, after completion, the full child output

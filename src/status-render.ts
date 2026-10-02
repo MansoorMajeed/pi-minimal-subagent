@@ -4,15 +4,15 @@ import { singleLineStatusText, type StatusHeaderRow, type StatusRow } from "./st
 
 function statusIcon(row: StatusHeaderRow, theme: any): string {
 	if (row.state === "done") return theme.fg("success", "✓");
-	if (row.state === "queued") return theme.fg("dim", "○");
+	if (row.state === "queued" || row.state === "aborted") return theme.fg("dim", "○");
 	if (row.state === "running") return theme.fg("accent", "●");
 	return theme.fg("error", "✗");
 }
 
 function renderStatusRow(row: StatusRow, theme: any): string {
 	if (row.kind === "header") {
-		const state = row.state.replaceAll("_", " ");
-		const stateColor = row.state === "done" ? "success" : row.state === "running" ? "accent" : row.state === "queued" ? "dim" : "error";
+		const state = row.state === "aborted" ? "cancelled" : row.state.replaceAll("_", " ");
+		const stateColor = row.state === "done" ? "success" : row.state === "running" ? "accent" : row.state === "queued" || row.state === "aborted" ? "dim" : "error";
 		const model = row.model ? theme.fg("dim", ` model: ${singleLineStatusText(row.model)}`) : "";
 		const usage = row.usage ? theme.fg("dim", ` ${row.usage}`) : "";
 		return `${statusIcon(row, theme)} ${theme.fg("toolTitle", theme.bold(singleLineStatusText(row.agent)))} ${theme.fg(stateColor, state)}${model}${usage}`;

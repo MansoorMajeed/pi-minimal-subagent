@@ -224,6 +224,41 @@ test("status component keeps six sanitized width-bounded rows", () => {
 	assert.ok(lines.every((line) => !line.includes("\x1b[2J")));
 });
 
+test("marked background receipts stay historical, compact and width-safe even when expanded", () => {
+	const tool = registeredTool();
+	const activities = ["running", "queued"].map((state, index) => {
+		const activity = createActivity("worker", "test/model", {
+			task: `Full task ${index}\nsecond line`, goal: `Goal ${index} 界界界\nunsafe\x1b[2J`,
+			startedAt: 1000, deadlineAt: 5000,
+		});
+		activity.state = state;
+		activity.recent = ["bash secret activity"];
+		return activity;
+	});
+	const result = { content: [{ type: "text", text: "original model receipt" }], details: {
+		backgroundReceipt: true, jobId: "receipt-1", runDir: "/tmp/receipt", activities,
+	} };
+	const render = (expanded: boolean, width = 100) => tool.renderResult(result, { expanded, isPartial: false }, fakeTheme()).render(width);
+	const initial = render(false);
+	assert.equal(initial.length, 4);
+	assert.match(initial[0], /Started 2 background tasks/);
+	assert.match(initial[1], /Goal 0/);
+	assert.match(initial[2], /Goal 1/);
+	assert.match(initial[3], /receipt-1/);
+	assert.doesNotMatch(initial.join("\n"), /running|queued|Elapsed|timeout|Reported|secret activity|\x1b/);
+	for (const activity of activities) { activity.state = "done"; activity.endedAt = 3000; }
+	assert.deepEqual(render(false), initial, "historical receipt does not change with runtime status");
+	for (const width of [1, 12, 40]) assert.ok(render(false, width).every((line: string) => visibleWidth(line) <= width));
+	const expanded = render(true).join("\n");
+	assert.match(expanded, /Full task 0\s*\nsecond line/);
+	assert.match(expanded, /Artifacts: \/tmp\/receipt/);
+	assert.doesNotMatch(expanded, /Elapsed|timeout|Reported|secret activity|\x1b/);
+	const single = { ...result, details: { ...result.details, activities: activities.slice(0, 1) } };
+	assert.match(tool.renderResult(single, { expanded: false }, fakeTheme()).render(100)[0], /Started 1 background task$/);
+	const unmarked = { ...result, details: { ...result.details, backgroundReceipt: undefined } };
+	assert.equal(tool.renderResult(unmarked, { expanded: false }, fakeTheme()).render(100).length, 12, "legacy results keep their existing rendering");
+});
+
 test("expanded rendering exposes full tasks while running and preserves completed output", () => {
 	const tool = registeredTool();
 	const activity = createActivity("worker", "provider/model", {
@@ -267,6 +302,7 @@ test("TUI defaults to background while non-TUI defaults to blocking and rejects 
 		assert.match(receipt.content[0].text, /continues in the background/i);
 		assert.ok(receipt.details.jobId);
 		assert.equal(receipt.details.results, undefined);
+		assert.equal(receipt.details.backgroundReceipt, true);
 
 		const blocking = await tool.execute("blocking-call", { tasks: [{ agent: "worker", task: "blocking" }], async: false }, undefined, undefined, ctx("tui"));
 		assert.match(blocking.content[0].text, /worker — ok/i);
@@ -314,7 +350,7 @@ test("background status and cancellation require exact IDs and the direct comman
 		assert.match(expanded, /Artifacts: \/tmp\/pi-minsub/);
 		assert.match(expanded, /worker — queued — first goal — queued — Queued/);
 		assert.match(expanded, /first detailed instructions/);
-		assert.equal(tool.renderResult(one, { expanded: false, isPartial: false }, fakeTheme()).render(80).length, 6);
+		assert.equal(tool.renderResult(one, { expanded: false, isPartial: false }, fakeTheme()).render(80).length, 3);
 		await assert.rejects(() => tool.execute("bad", { action: "status", id: one.details.jobId.slice(0, 4) }, undefined, undefined, ctx), /Unknown/);
 		await assert.rejects(() => tool.execute("missing", { action: "cancel" }, undefined, undefined, ctx), /requires.*id/i);
 
@@ -403,6 +439,78 @@ test("tool and slash cancellation report when natural completion already won", {
 		assert.match(notifications.at(-1)!, /already finished/i);
 		assert.doesNotMatch(notifications.at(-1)!, /cancelled;/i);
 		await runtime.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("subagents command rejects non-TUI use and reports an empty current runtime", async () => {
+	const { commands, handlers, messages } = registeredRuntime();
+	const command = commands.get("subagents");
+	assert.ok(command, "human job picker is registered");
+	const notifications: string[] = [];
+	const ctx = { cwd: harnessDir, mode: "tui", sessionManager: { getSessionId: () => "picker-empty" }, ui: { notify: (message: string) => notifications.push(message) } };
+	await handlers.get("session_start")?.[0]?.({}, ctx);
+	for (const mode of ["print", "json", "rpc"]) {
+		await command.handler("", { ...ctx, mode });
+		assert.match(notifications.at(-1)!, /TUI/);
+	}
+	await command.handler("", ctx);
+	assert.match(notifications.at(-1)!, /no.*background.*jobs/i);
+	assert.equal(messages.length, 0);
+	await handlers.get("session_shutdown")?.[0]?.({}, ctx);
+});
+
+test("subagents picker closes on shutdown and stale callbacks cannot touch a replacement context", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-picker-shutdown-"));
+	const oldPath = process.env.PATH;
+	process.env.PATH = `${fakePi(dir, "setTimeout(() => {}, 10000);")}${path.delimiter}${oldPath ?? ""}`;
+	const { commands, handlers, tool, messages } = registeredRuntime();
+	assert.ok(commands.get("subagents"));
+	let invalid = false;
+	let staleAccesses = 0;
+	let view: any;
+	let doneView: any;
+	let customCalls = 0;
+	let resolveOpened!: () => void;
+	const opened = new Promise<void>((resolve) => { resolveOpened = resolve; });
+	const ui = {
+		notify() { throw new Error("no notification expected"); },
+		custom(factory: any) {
+			customCalls++;
+			return new Promise((resolve) => {
+				doneView = resolve;
+				view = factory({ terminal: { rows: 24 }, requestRender() {} }, fakeTheme(), { matches: () => false }, resolve);
+				assert.ok(view.render(80).join("\n").includes("Inspect auth"));
+				resolveOpened();
+			});
+		},
+	};
+	const ctx = {
+		cwd: harnessDir, mode: "tui", sessionManager: { getSessionId: () => "picker-old" },
+		get ui() { if (invalid) { staleAccesses++; throw new Error("stale context"); } return ui; },
+	};
+	try {
+		await handlers.get("session_start")?.[0]?.({}, ctx);
+		const receipt = await tool.execute("launch", { tasks: [{ agent: "worker", label: "Inspect auth", task: "wait" }] }, undefined, undefined, ctx);
+		const pendingCommand = commands.get("subagents").handler("", ctx);
+		await opened;
+		await handlers.get("session_shutdown")?.[0]?.({}, ctx);
+		invalid = true;
+		await pendingCommand;
+		doneView(receipt.details.jobId);
+		view.handleInput?.("\r");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(staleAccesses, 0);
+		assert.equal(messages.length, 0);
+		assert.equal(customCalls, 1);
+		const notices: string[] = [];
+		const fresh = { cwd: harnessDir, mode: "tui", sessionManager: { getSessionId: () => "picker-new" }, ui: { notify: (text: string) => notices.push(text) } };
+		await handlers.get("session_start")?.[0]?.({}, fresh);
+		await commands.get("subagents").handler("", fresh);
+		assert.match(notices.at(-1)!, /no.*background.*jobs/i);
+		await handlers.get("session_shutdown")?.[0]?.({}, fresh);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -506,6 +614,71 @@ test("collapsed completion renderer leads with each task goal and keeps the job 
 	).render(24);
 	assert.equal(narrowLines.length, 2);
 	assert.ok(narrowLines.every((line: string) => visibleWidth(line) <= 24));
+});
+
+test("completion outcomes distinguish limits, cancellation and diagnostics without hiding them behind long goals", () => {
+	const { renderers } = registeredRuntime();
+	const renderer = renderers.get("minimal-subagent-complete");
+	const cases = [
+		{ state: "timed_out", result: { timedOut: true, answer: "partial", error: "timed out" }, expected: /timed out after 30m 0s/, detail: /partial output available/ },
+		{ state: "turn_limit", result: { turnLimitExceeded: true }, expected: /turn limit reached \(12\)/ },
+		{ state: "aborted", result: { timedOut: true, turnLimitExceeded: true, answer: "handoff" }, expected: /cancelled/, detail: /partial output available/ },
+		{ state: "failed", result: { error: "\x1b[2JNo API key\nfull second diagnostic line" }, expected: /failed/, detail: /No API key/ },
+		{ state: "timed_out", result: {}, expected: /timed out after 30m 0s/ },
+	];
+	for (const { state, result, expected, detail } of cases) {
+		const activity = createActivity("worker", "test/model", { task: "full task", goal: "Review authentication ".repeat(20), startedAt: 1000, endedAt: 1801000, maxTurns: 12 });
+		activity.state = state;
+		const input = { content: "unchanged", details: { jobId: "outcome-job", activities: [activity], results: [{ ok: false, ...result }] } };
+		const before = structuredClone(input);
+		const component = renderer(input, { expanded: false }, fakeTheme());
+		const lines = component.render(60);
+		assert.match(lines[0], expected);
+		if (detail) assert.match(lines[1], detail);
+		else assert.doesNotMatch(lines.join("\n"), /partial output/);
+		assert.doesNotMatch(lines.join("\n"), /\x1b\[2J|full second/);
+		for (const width of [1, 12, 60]) assert.ok(component.render(width).every((line: string) => visibleWidth(line) <= width));
+		assert.deepEqual(input, before, "presentation never rewrites stored results");
+		if (state === "failed") assert.match(renderer(input, { expanded: true }, fakeTheme()).render(100).join("\n"), /full second diagnostic line/);
+	}
+	const legacy = { details: { jobId: "legacy", activities: [{ ...createActivity("worker"), state: "timed_out" }] } };
+	const text = renderer(legacy, { expanded: false }, fakeTheme()).render(100).join("\n");
+	assert.match(text, /timed out/);
+	assert.doesNotMatch(text, /after|NaN|undefined/);
+});
+
+test("partial generic failures keep their diagnostic visible on narrow completion cards", () => {
+	const renderer = registeredRuntime().renderers.get("minimal-subagent-complete");
+	const activity = createActivity("worker", "test/model", { goal: "Inspect authentication" });
+	activity.state = "failed";
+	const result = { ok: false, answer: "A useful partial answer", inlineAnswer: "A useful partial answer", error: "\x1b[2JNo API key\nlong secondary diagnostic", activity };
+	const message = { details: { jobId: "partial-failure", activities: [activity], results: [result] } };
+	const component = renderer(message, { expanded: false }, fakeTheme());
+	for (const width of [24, 32]) {
+		const lines = component.render(width);
+		assert.match(lines[1], /No API key/);
+		assert.ok(lines.every((line: string) => visibleWidth(line) <= width));
+		assert.doesNotMatch(lines.join("\n"), /\x1b\[2J|secondary diagnostic/);
+	}
+	assert.match(component.render(100).join("\n"), /No API key.*partial output available/);
+	assert.equal(result.error, "\x1b[2JNo API key\nlong secondary diagnostic");
+});
+
+test("cancelled cards and completions use neutral presentation even when limit flags overlap", () => {
+	const activity = createActivity("worker");
+	activity.state = "aborted";
+	const colors: string[] = [];
+	const theme = { fg: (color: string, text: string) => { colors.push(color); return text; }, bold: (text: string) => text };
+	const rows = new SubagentStatusComponent(buildStatusRows([activity]), undefined, theme).render(100);
+	assert.match(rows[0], /cancelled/);
+	assert.doesNotMatch(rows[0], /✗|aborted/);
+	assert.ok(!colors.includes("error"));
+	colors.length = 0;
+	const renderer = registeredRuntime().renderers.get("minimal-subagent-complete");
+	const text = renderer({ details: { activities: [activity], results: [{ ok: false, timedOut: true }] } }, { expanded: false }, theme).render(100).join("\n");
+	assert.match(text, /cancelled/);
+	assert.doesNotMatch(text, /timed out|✗/);
+	assert.ok(!colors.includes("error"));
 });
 
 test("busy completions wait for agent settlement and shutdown wins the deferred delivery race", { concurrency: false }, async () => {

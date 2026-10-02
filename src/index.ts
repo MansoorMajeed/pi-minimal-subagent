@@ -7,18 +7,19 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, getAgentDir, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { BackgroundUI } from "./background-ui.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { JobRegistry, type JobHandle } from "./jobs.ts";
+import { showJobPicker } from "./job-ui.ts";
 import { loadModelGuide, searchModels } from "./model-guidance.ts";
 import { summarize } from "./result-summary.ts";
 import type { SubagentResult } from "./spawn.ts";
 import { expandedTaskText, SubagentStatusComponent } from "./status-render.ts";
-import { activityTimingText, buildStatusRows } from "./status-layout.ts";
+import { activityTimingText, buildStatusRows, completionOutcome, singleLineStatusText } from "./status-layout.ts";
 
 export { BackgroundUI, SubagentStatusComponent };
 
@@ -53,6 +54,7 @@ interface SubagentDetails {
 	jobId?: string;
 	state?: string;
 	statusSnapshot?: boolean;
+	backgroundReceipt?: boolean;
 	activities: ChildActivity[];
 	results?: SubagentResult[];
 }
@@ -80,6 +82,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	let jobs = new JobRegistry();
 	let generation = 0;
 	let runtimeAlive = false;
+	let commandUIAbort = new AbortController();
 	let sessionId: string | undefined;
 	let completionSubmitted = new Set<string>();
 	let deliveryErrors = new Map<string, string>();
@@ -141,6 +144,8 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		commandUIAbort.abort();
+		commandUIAbort = new AbortController();
 		if (deliveryCheck !== undefined) clearImmediate(deliveryCheck);
 		deliveryCheck = undefined;
 		jobs = new JobRegistry();
@@ -176,12 +181,20 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		if (deliveryCheck !== undefined) clearImmediate(deliveryCheck);
 		deliveryCheck = undefined;
 		runtimeAlive = false;
+		commandUIAbort.abort();
 		runtimeContext = undefined;
 		unsubscribeBackground?.();
 		unsubscribeBackground = undefined;
 		backgroundUI?.dispose();
 		backgroundUI = undefined;
 		await jobs.dispose();
+	});
+	pi.registerCommand("subagents", {
+		description: "Inspect or cancel current-session background subagent jobs",
+		handler: async (_args, ctx) => {
+			if (!runtimeAlive) return;
+			await showJobPicker(ctx, jobs, commandUIAbort.signal);
+		},
 	});
 	pi.registerCommand("subagent-cancel", {
 		description: "Cancel one background subagent job by exact ID",
@@ -211,15 +224,23 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			return new Text(`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("dim", id)}`, 0, 0);
 		}
 		if (!expanded) {
-			const lines = details.activities.map((activity, index) => {
-				const succeeded = details.results?.[index]?.ok === true;
-				const outcome = succeeded ? "succeeded" : "failed";
-				const presentation = succeeded ? { icon: "✓", color: "success" } : { icon: "✗", color: "error" };
-				return `${theme.fg(presentation.color, presentation.icon)} ${theme.fg("toolTitle", theme.bold(sanitizeTerminalText(activity.goal)))} ${theme.fg(presentation.color, outcome)}`;
-			});
-			lines.push(theme.fg("dim", `  job ${id}`));
 			return {
-				render: (width: number) => lines.map((line) => truncateToWidth(line, Math.max(1, width), "…")),
+				render(width: number) {
+					const available = Math.max(1, width);
+					const lines = details.activities.flatMap((activity, index) => {
+						const outcome = completionOutcome(details.results?.[index], activity);
+						const icon = theme.fg(outcome.color, outcome.icon);
+						const label = theme.fg(outcome.color, outcome.label);
+						const goalWidth = available - visibleWidth(`${outcome.icon}  ${outcome.label}`);
+						const goal = goalWidth > 1 ? truncateToWidth(singleLineStatusText(activity.goal), goalWidth, "…") : "";
+						const headline = goal
+							? `${icon} ${theme.fg("toolTitle", theme.bold(goal))} ${label}`
+							: `${icon} ${label}`;
+						return outcome.detail ? [headline, theme.fg("muted", `  ${outcome.detail}`)] : [headline];
+					});
+					lines.push(theme.fg("dim", `  job ${singleLineStatusText(id)}`));
+					return lines.map((line) => truncateToWidth(line, available, "…"));
+				},
 				invalidate() {},
 			};
 		}
@@ -412,7 +433,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				const goals = snapshot.activities.map((activity, index) => `[${index + 1}] ${activity.agent}: ${activity.goal}`).join("\n");
 				return {
 					content: [{ type: "text" as const, text: `Subagent job ${runId} accepted and continues in the background. Completion arrives automatically; do not poll.\n${goals}\nArtifacts: ${runDir}` }],
-					details: { runDir, jobId: runId, state: snapshot.state, activities: snapshot.activities } satisfies SubagentDetails,
+					details: { runDir, jobId: runId, state: snapshot.state, backgroundReceipt: true, activities: snapshot.activities } satisfies SubagentDetails,
 				};
 			}
 			let lastUpdateAt = 0;
@@ -472,6 +493,22 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 
 		renderResult(result: any, { expanded, isPartial }: any, theme: any) {
 			const details = result.details as SubagentDetails | undefined;
+			if (details?.backgroundReceipt) {
+				return {
+					render(width: number) {
+						const count = details.activities.length;
+						const lines = [
+							theme.fg("muted", `Started ${count} background task${count === 1 ? "" : "s"}`),
+							...details.activities.map((activity) => `  ${singleLineStatusText(activity.goal)}`),
+							theme.fg("dim", `  job ${singleLineStatusText(details.jobId)}`),
+						].map((line) => truncateToWidth(line, Math.max(1, width), "…"));
+						if (!expanded) return lines;
+						const text = `${expandedTaskText(details.activities)}\n\nArtifacts: ${details.runDir}`;
+						return [...lines, "", ...new Text(sanitizeTerminalText(text), 0, 0).render(Math.max(1, width))];
+					},
+					invalidate() {},
+				};
+			}
 			if (details?.statusSnapshot) {
 				const text = sanitizeTerminalText(result.content?.find((item: any) => item.type === "text")?.text ?? "");
 				if (expanded) return details.activities.some((activity) => activity.task)
