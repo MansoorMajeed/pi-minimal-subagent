@@ -22,6 +22,7 @@ function detailsLines(job: JobSnapshot): string[] {
 	const lines = [`Job ${job.id}`, `State: ${job.state}`, `Artifacts: ${job.runDir}`];
 	for (const [index, activity] of job.activities.entries()) {
 		lines.push("", `Task ${index + 1}: ${activity.agent}${activity.model ? ` · ${activity.model}` : ""}`);
+		lines.push(`Thinking: ${singleLineStatusText(activity.thinking ?? "default")}`);
 		lines.push(`Goal: ${activity.goal}`, activityTimingText(activity));
 		const cards = buildStatusRows([activity]);
 		for (const card of cards) {

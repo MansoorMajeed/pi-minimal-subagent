@@ -2,6 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { applyActivityEvent, createActivity, displayGoal, JsonLineParser, sanitizeTerminalText } from "../src/activity.ts";
 
+test("configured thinking respects suffix precedence and survives observed model updates", () => {
+	for (const level of ["off", "minimal", "low", "medium", "high", "xhigh"]) {
+		const activity = createActivity("worker", `provider/model:${level}`, { thinking: "medium" });
+		assert.equal(activity.thinking, level);
+		applyActivityEvent(activity, { type: "message_start", message: { role: "assistant", provider: "provider", model: "model" } });
+		assert.equal(activity.model, "provider/model");
+		assert.equal(activity.thinking, level);
+	}
+	assert.equal(createActivity("worker", "provider/model", { thinking: "off" }).thinking, "off");
+	assert.equal(createActivity("worker", "provider/model:unknown", { thinking: "high" }).thinking, "high");
+	assert.equal(createActivity("worker").thinking, undefined);
+});
+
 test("JsonLineParser preserves partial chunks and ignores malformed lines", () => {
 	const parser = new JsonLineParser();
 	assert.deepEqual(parser.push('{"type":"agent_start"}\n{"type":"tool_exec'), [{ type: "agent_start" }]);

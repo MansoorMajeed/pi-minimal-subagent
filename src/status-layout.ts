@@ -5,6 +5,7 @@ export interface StatusHeaderRow {
 	kind: "header";
 	agent: string;
 	model?: string;
+	thinking?: string;
 	state: ActivityState;
 	usage: string;
 }
@@ -92,6 +93,7 @@ export function buildStatusRows(activities: ChildActivity[], now = Date.now()): 
 			kind: "header",
 			agent: activity.agent,
 			model: activity.model,
+			thinking: activity.thinking,
 			state: activity.state,
 			usage: formatUsage(activity.usage),
 		});

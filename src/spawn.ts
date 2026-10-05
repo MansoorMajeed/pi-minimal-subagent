@@ -189,6 +189,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 		const signal = opts.signal;
 		const now = opts.now ?? Date.now;
 		const activity = createActivity(opts.label, opts.model, {
+			thinking: opts.thinking,
 			task: opts.task,
 			goal: opts.goal,
 			maxTurns: opts.maxTurns,

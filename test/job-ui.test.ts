@@ -162,6 +162,26 @@ test("picker Home/End/Page navigation selects duplicate-goal jobs by exact ID", 
 	owner.abort();
 });
 
+test("job details show configured thinking or default for legacy activities", async () => {
+	for (const thinking of ["off", undefined]) {
+		const jobs = new JobRegistry({ runner: async () => new Promise(() => {}) });
+		const entry = child("worker");
+		entry.activity.thinking = thinking;
+		jobs.submit({ id: "thinking-job", runDir: "/tmp/thinking-job", background: true, children: [entry] });
+		const screen = ui(30);
+		const owner = new AbortController();
+		const command = showJobPicker(screen.ctx, jobs, owner.signal);
+		screen.views[0].handleInput("\r");
+		await tick();
+		screen.selects[0].resolve("View details");
+		await tick();
+		assert.match(screen.views[1].render(120).join("\n"), new RegExp(`Thinking: ${thinking ?? "default"}`));
+		screen.views[1].handleInput("\x1b");
+		await command;
+		owner.abort();
+	}
+});
+
 test("details snapshot scrolls safely and never modifies editor or inserts messages", async () => {
 	const { jobs } = setup(1);
 	const screen = ui(7);
