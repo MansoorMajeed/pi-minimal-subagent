@@ -16,6 +16,7 @@ export interface UsageSummary {
 export interface ChildActivity {
 	agent: string;
 	model?: string;
+	thinking?: string;
 	task: string;
 	goal: string;
 	reported?: string;
@@ -30,6 +31,7 @@ export interface ChildActivity {
 }
 
 export interface ActivityMetadata {
+	thinking?: string;
 	task?: string;
 	goal?: string;
 	startedAt?: number;
@@ -80,6 +82,7 @@ export function createActivity(agent: string, model = "default", metadata: Activ
 	return {
 		agent,
 		model,
+		thinking: /:(off|minimal|low|medium|high|xhigh)$/.exec(model)?.[1] ?? metadata.thinking,
 		task,
 		goal: metadata.goal ?? displayGoal(undefined, task),
 		startedAt: metadata.startedAt,

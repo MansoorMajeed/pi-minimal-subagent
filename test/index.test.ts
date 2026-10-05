@@ -101,6 +101,16 @@ test("extension registration remains suppressed inside a minimal subagent child"
 	assert.equal(registered, false);
 });
 
+test("status headers show configured or default thinking and sanitize it", () => {
+	for (const thinking of ["high", "off", undefined, "\x1b[2Jhigh\n"]) {
+		const activity = createActivity("worker", "provider/model", { thinking });
+		const component = new SubagentStatusComponent(buildStatusRows([activity]), undefined, fakeTheme());
+		assert.match(component.render(160)[0], new RegExp(`thinking: ${thinking === undefined ? "default" : thinking === "off" ? "off" : "high"}`));
+		assert.doesNotMatch(component.render(160)[0], /\x1b|\n/);
+		for (const width of [1, 12, 40]) assert.ok(component.render(width).every((line: string) => visibleWidth(line) <= width));
+	}
+});
+
 test("tool schema accepts an optional concise task label", () => {
 	const tool = registeredTool();
 	const taskProperties = tool.parameters.properties.tasks.items.properties;
@@ -336,7 +346,9 @@ test("background status and cancellation require exact IDs and the direct comman
 		const { tool, handlers, commands } = registeredRuntime();
 		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
 		const one = await tool.execute("one", { tasks: [{ agent: "worker", label: "first goal", task: "first detailed instructions" }] }, undefined, undefined, ctx);
-		const two = await tool.execute("two", { tasks: [{ agent: "worker", task: "second" }] }, undefined, undefined, ctx);
+		const two = await tool.execute("two", { tasks: [{ agent: "worker", task: "second", model: "provider/model:off" }] }, undefined, undefined, ctx);
+		assert.equal(one.details.activities[0].thinking, "high");
+		assert.equal(two.details.activities[0].thinking, "off");
 		const active = await tool.execute("status", { action: "status" }, undefined, undefined, ctx);
 		assert.match(active.content[0].text, new RegExp(one.details.jobId));
 		assert.match(active.content[0].text, new RegExp(two.details.jobId));

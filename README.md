@@ -118,7 +118,7 @@ Live widget cards and blocking tool results use the same six-row status tail per
 child in any terminal or multiplexer:
 
 ```text
-● scout running model: anthropic/claude-haiku-4-5 [12,400 tok · $0.0310]
+● scout running model: anthropic/claude-haiku-4-5 thinking: medium [12,400 tok · $0.0310]
   Goal: Map auth flow
   Elapsed 3m 12s · timeout in 26m 48s · 17 turns
   Reported: mapped middleware; checking refresh-token handling
@@ -132,6 +132,13 @@ activities. Missing rows are padded above the activity tail. Queued children do
 not accrue runtime; terminal elapsed time freezes. An explicit turn cap appears
 as, for example, `17/80 turns`. The timeout countdown is a hard execution budget,
 not an ETA.
+
+The header and job details show the configured thinking level. A supported model
+suffix (such as `:high`) takes precedence over the agent's `thinking:` setting,
+and the level stays visible when the child reports its model. `thinking: default`
+means no level was explicitly supplied (or a legacy snapshot lacks this metadata):
+the child uses its own Pi configuration, not the parent's current level. The
+label is not confirmation of the reasoning level actually applied by the provider.
 
 Background launch entries are compact **historical receipts**, not live cards:
 

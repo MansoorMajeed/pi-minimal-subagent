@@ -37,6 +37,7 @@ test("running status uses the exact six-row goal, timing, report, and activity c
 			kind: "header",
 			agent: "scout",
 			model: "anthropic/claude-sonnet-4",
+			thinking: undefined,
 			state: "running",
 			usage: "[1,234 tok · $0.0123]",
 		},

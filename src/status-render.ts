@@ -14,8 +14,9 @@ function renderStatusRow(row: StatusRow, theme: any): string {
 		const state = row.state === "aborted" ? "cancelled" : row.state.replaceAll("_", " ");
 		const stateColor = row.state === "done" ? "success" : row.state === "running" ? "accent" : row.state === "queued" || row.state === "aborted" ? "dim" : "error";
 		const model = row.model ? theme.fg("dim", ` model: ${singleLineStatusText(row.model)}`) : "";
+		const thinking = theme.fg("dim", ` thinking: ${singleLineStatusText(row.thinking ?? "default")}`);
 		const usage = row.usage ? theme.fg("dim", ` ${row.usage}`) : "";
-		return `${statusIcon(row, theme)} ${theme.fg("toolTitle", theme.bold(singleLineStatusText(row.agent)))} ${theme.fg(stateColor, state)}${model}${usage}`;
+		return `${statusIcon(row, theme)} ${theme.fg("toolTitle", theme.bold(singleLineStatusText(row.agent)))} ${theme.fg(stateColor, state)}${model}${thinking}${usage}`;
 	}
 	if (!row.text) return "";
 	const displayText = singleLineStatusText(row.text);

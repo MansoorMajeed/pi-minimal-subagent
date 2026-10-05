@@ -380,7 +380,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					sessionPath,
 					model,
 					goal,
-					activity: createActivity(t.agent, model, { task: t.task, goal, maxTurns: cfg.maxTurns }),
+					activity: createActivity(t.agent, model, { thinking: cfg.thinking, task: t.task, goal, maxTurns: cfg.maxTurns }),
 				};
 			});
 

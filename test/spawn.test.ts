@@ -187,16 +187,22 @@ test("runSubagent maps thinking settings to exact Pi flags", { concurrency: fals
 	);
 	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
 	try {
-		const explicitOff = JSON.parse((await runSubagent({ ...baseOptions(dir), thinking: "off" })).answer);
+		const offResult = await runSubagent({ ...baseOptions(dir), thinking: "off" });
+		assert.equal(offResult.activity.thinking, "off");
+		const explicitOff = JSON.parse(offResult.answer);
 		assert.deepEqual(explicitOff.slice(explicitOff.indexOf("--thinking"), explicitOff.indexOf("--thinking") + 2), ["--thinking", "off"]);
 
-		const omitted = JSON.parse((await runSubagent(baseOptions(dir))).answer);
+		const defaultResult = await runSubagent(baseOptions(dir));
+		assert.equal(defaultResult.activity.thinking, undefined);
+		const omitted = JSON.parse(defaultResult.answer);
 		assert.equal(omitted.includes("--thinking"), false);
 
 		const explicitHigh = JSON.parse((await runSubagent({ ...baseOptions(dir), thinking: "high" })).answer);
 		assert.deepEqual(explicitHigh.slice(explicitHigh.indexOf("--thinking"), explicitHigh.indexOf("--thinking") + 2), ["--thinking", "high"]);
 
-		const modelSuffix = JSON.parse((await runSubagent({ ...baseOptions(dir), model: "provider/model:high", thinking: "off" })).answer);
+		const suffixResult = await runSubagent({ ...baseOptions(dir), model: "provider/model:high", thinking: "off" });
+		assert.equal(suffixResult.activity.thinking, "high");
+		const modelSuffix = JSON.parse(suffixResult.answer);
 		assert.equal(modelSuffix.includes("--thinking"), false);
 	} finally {
 		process.env.PATH = oldPath;
