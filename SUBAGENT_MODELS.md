@@ -8,7 +8,7 @@ Choose by task difficulty, not agent name. Explicit user choices override these 
 
 ## Provider and resolution
 
-- Use `openai-codex` for subscription access. Ask before using any separately billed provider, unless explicitly authorized.
+- Use `openai` for subscription access. Ask before using any separately billed provider, unless explicitly authorized.
 - Resolve exact IDs with `subagent({ action: "models", query: "<model search>" })`. Never invent IDs or assume availability.
 - Prefer `openai-codex` among matches; ask if still ambiguous. Report missing models.
 - Pass the exact `provider/model-id` in the task’s `model` field. Append a supported thinking suffix when needed, e.g. `:xhigh`.
