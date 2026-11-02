@@ -493,7 +493,7 @@ test("tool and slash cancellation report when natural completion already won", {
 	}
 });
 
-test("subagents command rejects non-TUI use and reports an empty current runtime", async () => {
+test("subagents command reports an empty current runtime in every mode", async () => {
 	const { commands, handlers, messages } = registeredRuntime();
 	const command = commands.get("subagents");
 	assert.ok(command, "human job picker is registered");
@@ -502,12 +502,61 @@ test("subagents command rejects non-TUI use and reports an empty current runtime
 	await handlers.get("session_start")?.[0]?.({}, ctx);
 	for (const mode of ["print", "json", "rpc"]) {
 		await command.handler("", { ...ctx, mode });
-		assert.match(notifications.at(-1)!, /TUI/);
+		assert.match(notifications.at(-1)!, /no active background subagent jobs/i);
 	}
 	await command.handler("", ctx);
 	assert.match(notifications.at(-1)!, /no.*background.*jobs/i);
 	assert.equal(messages.length, 0);
 	await handlers.get("session_shutdown")?.[0]?.({}, ctx);
+});
+
+test("outside the TUI, subagents lists active jobs as text and subagent-cancel all stops every one", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-rpc-controls-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `setTimeout(() => {}, 5_000);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const notifications: string[] = [];
+	const ctx = {
+		cwd: harnessDir,
+		mode: "rpc",
+		hasUI: true,
+		isIdle: () => true,
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "session-rpc-controls" },
+		ui: { notify: (text: string) => notifications.push(text) },
+	};
+	try {
+		const { tool, handlers, commands, messages } = registeredRuntime();
+		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const one = await tool.execute("one", { tasks: [{ agent: "worker", label: "First goal", task: "first" }], async: true }, undefined, undefined, ctx);
+		const two = await tool.execute("two", { tasks: [{ agent: "scout", label: "Second goal", task: "second" }], async: true }, undefined, undefined, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		await commands.get("subagents").handler("", ctx);
+		const listing = notifications.at(-1)!;
+		assert.match(listing, new RegExp(`Job ${one.details.jobId} — running`));
+		assert.match(listing, new RegExp(`Job ${two.details.jobId} — running`));
+		assert.match(listing, /worker — \w+ — First goal/);
+		assert.match(listing, /scout — \w+ — Second goal/);
+
+		await commands.get("subagent-cancel").handler(" all ", ctx);
+		assert.match(notifications.at(-1)!, /Cancelled 2 subagent jobs.*file edits are not undone/i);
+		for (const id of [one.details.jobId, two.details.jobId]) {
+			const status = await tool.execute(`status-${id}`, { action: "status", id }, undefined, undefined, ctx);
+			assert.equal(status.details.state, "terminal");
+		}
+		await commands.get("subagent-cancel").handler("all", ctx);
+		assert.match(notifications.at(-1)!, /no active background subagent jobs/i);
+		await commands.get("subagents").handler("", ctx);
+		assert.match(notifications.at(-1)!, /no active background subagent jobs/i);
+		await handlers.get("agent_settled")?.[0]?.({}, ctx);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(messages.length, 0, "cancelled jobs send no completion follow-up");
+		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("subagents picker closes on shutdown and stale callbacks cannot touch a replacement context", { concurrency: false }, async () => {

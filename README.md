@@ -95,7 +95,13 @@ retains terminal results for the current session runtime. Human controls are als
 ```text
 /subagents
 /subagent-cancel <exact-job-id>
+/subagent-cancel all
 ```
+
+`/subagent-cancel all` cancels every active background job in this session runtime.
+Outside the TUI (for example an RPC client), `/subagents` reports the active jobs as
+one plain-text notification (ID, state, each child's goal, progress and timing)
+instead of opening the picker.
 
 `/subagents` opens a bounded, scrollable TUI picker: active background jobs first,
 then retained terminal jobs, newest-submitted first. Choose a job by its goals and
@@ -110,8 +116,7 @@ cancelling work. Details include activity, available task instructions, inline
 results, and artifact paths. Reopen to refresh a snapshot. Original task instructions
 are not retained in terminal job snapshots. These controls cover only this session
 runtime: reload/replacement clears the list, and opening the picker never adds
-model messages or changes your prompt. The picker requires TUI mode; exact-ID
-tool controls remain available in other modes.
+model messages or changes your prompt.
 
 Cancellation does not roll back file edits. Tasks in one call must be independent,
 and concurrent parent/child or child/child writes must own non-overlapping files

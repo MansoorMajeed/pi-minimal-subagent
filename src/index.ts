@@ -76,10 +76,16 @@ function jobStatusText(snapshot: ReturnType<JobHandle["snapshot"]>): string {
 	return snapshot.results ? `${status}\n\n${summarize(snapshot.results)}` : status;
 }
 
+const NO_ACTIVE_JOBS = "No active background subagent jobs.";
+
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	if (isMinimalSubagentChild()) return;
 
 	let jobs = new JobRegistry();
+	const activeJobsText = () => {
+		const active = jobs.listActiveBackground();
+		return boundedText(active.length ? active.map(jobStatusText).join("\n\n") : NO_ACTIVE_JOBS);
+	};
 	let generation = 0;
 	let runtimeAlive = false;
 	let commandUIAbort = new AbortController();
@@ -193,15 +199,33 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		description: "Inspect or cancel current-session background subagent jobs",
 		handler: async (_args, ctx) => {
 			if (!runtimeAlive) return;
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify(activeJobsText(), "info");
+				return;
+			}
 			await showJobPicker(ctx, jobs, commandUIAbort.signal);
 		},
 	});
 	pi.registerCommand("subagent-cancel", {
-		description: "Cancel one background subagent job by exact ID",
+		description: "Cancel one background subagent job by exact ID, or all active jobs with 'all'",
 		handler: async (args: string, ctx: any) => {
 			const id = args.trim();
 			if (!id) {
-				ctx.ui.notify("Usage: /subagent-cancel <id>", "error");
+				ctx.ui.notify("Usage: /subagent-cancel <id|all>", "error");
+				return;
+			}
+			if (id === "all") {
+				const active = jobs.listActiveBackground();
+				if (!active.length) {
+					ctx.ui.notify(NO_ACTIVE_JOBS, "info");
+					return;
+				}
+				const settled = await Promise.allSettled(active.map((job) => jobs.cancel(job.id)));
+				const failures = settled.flatMap((result, index) =>
+					result.status === "rejected" ? [`${active[index].id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`] : []);
+				const cancelled = settled.filter((result) => result.status === "fulfilled" && result.value.disposition !== "already-terminal").length;
+				const message = `Cancelled ${cancelled} subagent job${cancelled === 1 ? "" : "s"}; file edits are not undone.`;
+				ctx.ui.notify(failures.length ? `${message}\nFailed to cancel:\n${failures.join("\n")}` : message, failures.length ? "error" : "info");
 				return;
 			}
 			try {
@@ -284,9 +308,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						details: { runDir: snapshot.runDir, jobId: snapshot.id, state: snapshot.state, statusSnapshot: true, activities: snapshot.activities, results: snapshot.results } satisfies SubagentDetails,
 					};
 				}
-				const active = jobs.listActiveBackground();
-				const text = active.length ? active.map(jobStatusText).join("\n\n") : "No active background subagent jobs.";
-				return { content: [{ type: "text" as const, text: boundedText(text) }] };
+				return { content: [{ type: "text" as const, text: activeJobsText() }] };
 			}
 			if (params.action === "cancel") {
 				if (params.query !== undefined) throw new Error("subagent action 'cancel' does not accept query.");
