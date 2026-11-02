@@ -19,7 +19,9 @@ function packageRoot(start: string): string {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-job-ui-"));
 fs.cpSync(new URL("../src", import.meta.url), path.join(root, "src"), { recursive: true });
 const piRoot = packageRoot(path.dirname(fs.realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim())));
-const deps = path.join(piRoot, "node_modules");
+// Sibling deps are hoisted two levels up from the package in both npm installs
+// (…/node_modules/@earendil-works/pi-coding-agent) and managed releases.
+const deps = path.join(piRoot, "..", "..");
 fs.mkdirSync(path.join(root, "node_modules", "@earendil-works"), { recursive: true });
 for (const name of ["pi-coding-agent", "pi-tui"]) fs.symlinkSync(name === "pi-coding-agent" ? piRoot : path.join(deps, "@earendil-works", name), path.join(root, "node_modules", "@earendil-works", name), "dir");
 const { showJobPicker } = await import(pathToFileURL(path.join(root, "src/job-ui.ts")).href);

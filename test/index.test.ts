@@ -26,7 +26,9 @@ fs.cpSync(sourceDir, path.join(harnessDir, "src"), { recursive: true });
 fs.cpSync(path.resolve(new URL("../agents", import.meta.url).pathname), path.join(harnessDir, "agents"), { recursive: true });
 fs.copyFileSync(new URL("../SUBAGENT_MODELS.md", import.meta.url), path.join(harnessDir, "SUBAGENT_MODELS.md"));
 const piRoot = findPackageRoot(path.dirname(fs.realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim())));
-const dependencyRoot = path.join(piRoot, "node_modules");
+// Sibling deps are hoisted two levels up from the package in both npm installs
+// (…/node_modules/@earendil-works/pi-coding-agent) and managed releases.
+const dependencyRoot = path.join(piRoot, "..", "..");
 fs.mkdirSync(path.join(harnessDir, "node_modules", "@earendil-works"), { recursive: true });
 fs.symlinkSync(piRoot, path.join(harnessDir, "node_modules", "@earendil-works", "pi-coding-agent"), "dir");
 fs.symlinkSync(path.join(dependencyRoot, "@earendil-works", "pi-tui"), path.join(harnessDir, "node_modules", "@earendil-works", "pi-tui"), "dir");
@@ -359,7 +361,7 @@ test("background status and cancellation require exact IDs and the direct comman
 		assert.match(compact[1], /worker.*first goal/);
 		assert.ok(compact.every((line: string) => visibleWidth(line) <= 80));
 		const expanded = tool.renderResult(snapshot, { expanded: true, isPartial: false }, fakeTheme()).render(120).join("\n");
-		assert.match(expanded, /Artifacts: \/tmp\/pi-minsub/);
+		assert.match(expanded, new RegExp(`Artifacts: ${path.join(os.tmpdir(), "pi-minsub").replace(/\\/g, "\\\\")}`));
 		assert.match(expanded, /worker — queued — first goal — queued — Queued/);
 		assert.match(expanded, /first detailed instructions/);
 		assert.equal(tool.renderResult(one, { expanded: false, isPartial: false }, fakeTheme()).render(80).length, 3);

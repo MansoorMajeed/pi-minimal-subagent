@@ -16,7 +16,9 @@ function findPackageRoot(start) {
 }
 
 const piRoot = findPackageRoot(path.dirname(fs.realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim())));
-const piAiRoot = path.join(piRoot, "node_modules/@earendil-works/pi-ai");
+// Sibling deps are hoisted two levels up from the package in both npm installs
+// (…/node_modules/@earendil-works/pi-coding-agent) and managed releases.
+const piAiRoot = path.join(piRoot, "..", "..", "@earendil-works", "pi-ai");
 const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import(pathToFileURL(path.join(piRoot, "dist/index.js")));
 const { getModel, createAssistantMessageEventStream } = await import(pathToFileURL(path.join(piAiRoot, "dist/compat.js")));
 const root = process.cwd();
@@ -30,8 +32,8 @@ async function reproduce(name, childDelay, abortDelay) {
 	fs.copyFileSync(path.join(root, "SUBAGENT_MODELS.md"), path.join(harness, "SUBAGENT_MODELS.md"));
 	fs.mkdirSync(path.join(harness, "node_modules/@earendil-works"), { recursive: true });
 	fs.symlinkSync(piRoot, path.join(harness, "node_modules/@earendil-works/pi-coding-agent"), "dir");
-	fs.symlinkSync(path.join(piRoot, "node_modules/@earendil-works/pi-tui"), path.join(harness, "node_modules/@earendil-works/pi-tui"), "dir");
-	fs.symlinkSync(path.join(piRoot, "node_modules/typebox"), path.join(harness, "node_modules/typebox"), "dir");
+	fs.symlinkSync(path.join(piRoot, "..", "..", "@earendil-works", "pi-tui"), path.join(harness, "node_modules/@earendil-works/pi-tui"), "dir");
+	fs.symlinkSync(path.join(piRoot, "..", "..", "typebox"), path.join(harness, "node_modules/typebox"), "dir");
 	const extension = (await import(`${pathToFileURL(path.join(harness, "src/index.ts")).href}?${name}`)).default;
 
 	const bin = path.join(temp, "bin");
