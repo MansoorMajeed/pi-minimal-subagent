@@ -82,7 +82,12 @@ instructions.
 | Pi mode | Omitted `async` | `async: true` | `async: false` |
 |---|---|---|---|
 | TUI | Background receipt | Background receipt | Blocking result |
-| Print / JSON / RPC | Blocking result | Rejected before launch | Blocking result |
+| RPC | Blocking result | Background receipt | Blocking result |
+| Print / JSON | Blocking result | Rejected before launch | Blocking result |
+
+In RPC mode, background completion arrives as an unsolicited follow-up turn once
+the session is idle — RPC clients must tolerate turn events outside their own
+prompts. Jobs are cancelled if the process shuts down before they finish.
 
 Only active background jobs appear in status without an ID. Exact-ID status also
 retains terminal results for the current session runtime. Human controls are also available directly while the parent is busy:

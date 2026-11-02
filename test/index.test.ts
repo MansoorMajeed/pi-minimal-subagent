@@ -320,11 +320,45 @@ test("TUI defaults to background while non-TUI defaults to blocking and rejects 
 		assert.match(blocking.content[0].text, /worker — ok/i);
 		const printDefault = await tool.execute("print-call", { tasks: [{ agent: "worker", task: "print" }] }, undefined, undefined, ctx("print"));
 		assert.match(printDefault.content[0].text, /worker — ok/i);
-		await assert.rejects(
-			() => tool.execute("bad-call", { tasks: [{ agent: "worker", task: "bad" }], async: true }, undefined, undefined, ctx("rpc")),
-			/TUI|synchronous/i,
-		);
+		const rpcDefault = await tool.execute("rpc-default-call", { tasks: [{ agent: "worker", task: "rpc-default" }] }, undefined, undefined, ctx("rpc"));
+		assert.match(rpcDefault.content[0].text, /worker — ok/i);
+		const rpcBackground = await tool.execute("rpc-async-call", { tasks: [{ agent: "worker", task: "rpc-background" }], async: true }, undefined, undefined, ctx("rpc"));
+		assert.match(rpcBackground.content[0].text, /continues in the background/i);
+		assert.equal(rpcBackground.details.backgroundReceipt, true);
+		for (const mode of ["print", "json"]) {
+			await assert.rejects(
+				() => tool.execute(`bad-call-${mode}`, { tasks: [{ agent: "worker", task: "bad" }], async: true }, undefined, undefined, ctx(mode)),
+				/print|JSON|blocking/i,
+			);
+		}
 		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx("tui"));
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("RPC background jobs deliver completion as a follow-up turn once the session is idle", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-rpc-delivery-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"done"}]}; setTimeout(() => process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"), 80);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const { tool, handlers, messages } = registeredRuntime();
+		const ctx = { cwd: harnessDir, mode: "rpc", hasUI: true, modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "session-rpc" }, ui: {}, isIdle: () => true };
+		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const receipt = await tool.execute("rpc-bg", { tasks: [{ agent: "worker", task: "deliver me" }], async: true }, undefined, undefined, ctx);
+		assert.equal(receipt.details.backgroundReceipt, true);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		assert.equal(messages.length, 1);
+		await handlers.get("agent_settled")?.[0]?.({}, ctx);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(messages.length, 1);
+		assert.equal(messages[0].message.customType, "minimal-subagent-complete");
+		assert.match(messages[0].message.content, /Background subagent job .* completed/i);
+		assert.equal(messages[0].options.deliverAs, "followUp");
+		assert.equal(messages[0].options.triggerTurn, true);
+		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });

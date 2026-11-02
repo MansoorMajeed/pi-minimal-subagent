@@ -30,7 +30,7 @@ const ToolParams = Type.Object({
 		Type.String({ description: "'list': agents/guidance. 'models': model search. 'status'/'cancel': exact-ID background controls. Omit to run tasks." }),
 	),
 	query: Type.Optional(Type.String({ description: "Required for 'models': name or provider/model ID substring (e.g. 'luna'); at most 50 matches.", minLength: 1 })),
-	async: Type.Optional(Type.Boolean({ description: "TUI only: background execution. Defaults true in TUI and false elsewhere; false always blocks." })),
+	async: Type.Optional(Type.Boolean({ description: "Background execution. Defaults true in TUI and false elsewhere; explicit true also runs in the background in RPC mode. false always blocks." })),
 	id: Type.Optional(Type.String({ description: "Exact background job ID for status or cancel." })),
 	tasks: Type.Optional(
 		Type.Array(
@@ -252,6 +252,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		label: "Subagent",
 		description:
 			"Fan out one or more focused child agents. In TUI, omit `async` whenever meaningful independent parent work remains. Use async:false only when the next parent action requires the child result and no meaningful independent work remains. " +
+			"In RPC mode, pass async:true to run in the background; completion arrives as a follow-up turn once the session is idle. " +
 			"Each task names an agent and a concrete instruction; multiple tasks run concurrently. " +
 			"Children cannot see the parent conversation, so make every task self-contained. " +
 			"Set a per-task `model` to use a faster/cheaper model for lighter work (e.g. a small model for recon, a stronger one for review). " +
@@ -347,8 +348,8 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				};
 			}
 			const background = params.async ?? ctx.mode === "tui";
-			if (params.async === true && ctx.mode !== "tui") {
-				throw new Error("Background subagents require TUI mode; use synchronous execution with async:false or omit async outside the TUI.");
+			if (params.async === true && ctx.mode !== "tui" && ctx.mode !== "rpc") {
+				throw new Error("Background subagents require an interactive or RPC runtime; print and JSON modes exit after one prompt, so use blocking execution (async:false or omit async).");
 			}
 			if (background && signal?.aborted) throw new Error("Subagent launch was aborted before background job acceptance.");
 
