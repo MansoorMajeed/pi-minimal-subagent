@@ -13,6 +13,7 @@ import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity }
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { BackgroundUI } from "./background-ui.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
+import { loadChildAppendPrompt, withAppendPrompt } from "./child-prompt.ts";
 import { JobRegistry, type JobHandle } from "./jobs.ts";
 import { showJobPicker } from "./job-ui.ts";
 import { loadModelGuide, searchModels } from "./model-guidance.ts";
@@ -30,7 +31,7 @@ const ToolParams = Type.Object({
 		Type.String({ description: "'list': agents/guidance. 'models': model search. 'status'/'cancel': exact-ID background controls. Omit to run tasks." }),
 	),
 	query: Type.Optional(Type.String({ description: "Required for 'models': name or provider/model ID substring (e.g. 'luna'); at most 50 matches.", minLength: 1 })),
-	async: Type.Optional(Type.Boolean({ description: "TUI only: background execution. Defaults true in TUI and false elsewhere; false always blocks." })),
+	async: Type.Optional(Type.Boolean({ description: "Background execution. Defaults true in TUI and false elsewhere; explicit true also runs in the background in RPC mode. false always blocks." })),
 	id: Type.Optional(Type.String({ description: "Exact background job ID for status or cancel." })),
 	tasks: Type.Optional(
 		Type.Array(
@@ -39,6 +40,7 @@ const ToolParams = Type.Object({
 				task: Type.String({ description: "Concrete instruction for this subagent" }),
 				label: Type.Optional(Type.String({ description: "Concise display goal (e.g. 'Implement refresh-token rotation')" })),
 				model: Type.Optional(Type.String({ description: "Override model (e.g. 'anthropic/claude-sonnet-4')" })),
+				cwd: Type.Optional(Type.String({ description: "Absolute working directory for this child (e.g. a project checkout or worktree). Defaults to the parent's cwd." })),
 			}),
 			{ description: "One entry per subagent. Multiple entries run concurrently.", minItems: 1, maxItems: MAX_TASKS },
 		),
@@ -76,10 +78,16 @@ function jobStatusText(snapshot: ReturnType<JobHandle["snapshot"]>): string {
 	return snapshot.results ? `${status}\n\n${summarize(snapshot.results)}` : status;
 }
 
+const NO_ACTIVE_JOBS = "No active background subagent jobs.";
+
 export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	if (isMinimalSubagentChild()) return;
 
 	let jobs = new JobRegistry();
+	const activeJobsText = () => {
+		const active = jobs.listActiveBackground();
+		return boundedText(active.length ? active.map(jobStatusText).join("\n\n") : NO_ACTIVE_JOBS);
+	};
 	let generation = 0;
 	let runtimeAlive = false;
 	let commandUIAbort = new AbortController();
@@ -193,15 +201,33 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		description: "Inspect or cancel current-session background subagent jobs",
 		handler: async (_args, ctx) => {
 			if (!runtimeAlive) return;
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify(activeJobsText(), "info");
+				return;
+			}
 			await showJobPicker(ctx, jobs, commandUIAbort.signal);
 		},
 	});
 	pi.registerCommand("subagent-cancel", {
-		description: "Cancel one background subagent job by exact ID",
+		description: "Cancel one background subagent job by exact ID, or all active jobs with 'all'",
 		handler: async (args: string, ctx: any) => {
 			const id = args.trim();
 			if (!id) {
-				ctx.ui.notify("Usage: /subagent-cancel <id>", "error");
+				ctx.ui.notify("Usage: /subagent-cancel <id|all>", "error");
+				return;
+			}
+			if (id === "all") {
+				const active = jobs.listActiveBackground();
+				if (!active.length) {
+					ctx.ui.notify(NO_ACTIVE_JOBS, "info");
+					return;
+				}
+				const settled = await Promise.allSettled(active.map((job) => jobs.cancel(job.id)));
+				const failures = settled.flatMap((result, index) =>
+					result.status === "rejected" ? [`${active[index].id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`] : []);
+				const cancelled = settled.filter((result) => result.status === "fulfilled" && result.value.disposition !== "already-terminal").length;
+				const message = `Cancelled ${cancelled} subagent job${cancelled === 1 ? "" : "s"}; file edits are not undone.`;
+				ctx.ui.notify(failures.length ? `${message}\nFailed to cancel:\n${failures.join("\n")}` : message, failures.length ? "error" : "info");
 				return;
 			}
 			try {
@@ -252,6 +278,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		label: "Subagent",
 		description:
 			"Fan out one or more focused child agents. In TUI, omit `async` whenever meaningful independent parent work remains. Use async:false only when the next parent action requires the child result and no meaningful independent work remains. " +
+			"In RPC mode, pass async:true to run in the background; completion arrives as a follow-up turn once the session is idle. " +
 			"Each task names an agent and a concrete instruction; multiple tasks run concurrently. " +
 			"Children cannot see the parent conversation, so make every task self-contained. " +
 			"Set a per-task `model` to use a faster/cheaper model for lighter work (e.g. a small model for recon, a stronger one for review). " +
@@ -283,9 +310,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						details: { runDir: snapshot.runDir, jobId: snapshot.id, state: snapshot.state, statusSnapshot: true, activities: snapshot.activities, results: snapshot.results } satisfies SubagentDetails,
 					};
 				}
-				const active = jobs.listActiveBackground();
-				const text = active.length ? active.map(jobStatusText).join("\n\n") : "No active background subagent jobs.";
-				return { content: [{ type: "text" as const, text: boundedText(text) }] };
+				return { content: [{ type: "text" as const, text: activeJobsText() }] };
 			}
 			if (params.action === "cancel") {
 				if (params.query !== undefined) throw new Error("subagent action 'cancel' does not accept query.");
@@ -346,9 +371,19 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					content: [{ type: "text" as const, text: `Unknown agent(s): ${[...new Set(unknown)].join(", ")}.\nAvailable: ${available}` }],
 				};
 			}
+			for (const [index, t] of tasks.entries()) {
+				if (t.cwd === undefined) continue;
+				if (!path.isAbsolute(t.cwd)) throw new Error(`Task ${index + 1} cwd must be an absolute path: ${t.cwd}`);
+				let isDirectory = false;
+				try {
+					isDirectory = fs.statSync(t.cwd).isDirectory();
+				} catch {}
+				if (!isDirectory) throw new Error(`Task ${index + 1} cwd is not an existing directory: ${t.cwd}`);
+			}
+			const appendPrompt = loadChildAppendPrompt();
 			const background = params.async ?? ctx.mode === "tui";
-			if (params.async === true && ctx.mode !== "tui") {
-				throw new Error("Background subagents require TUI mode; use synchronous execution with async:false or omit async outside the TUI.");
+			if (params.async === true && ctx.mode !== "tui" && ctx.mode !== "rpc") {
+				throw new Error("Background subagents require an interactive or RPC runtime; print and JSON modes exit after one prompt, so use blocking execution (async:false or omit async).");
 			}
 			if (background && signal?.aborted) throw new Error("Subagent launch was aborted before background job acceptance.");
 
@@ -402,9 +437,9 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						extensions: p.cfg.extensions,
 						inheritProjectContext: p.cfg.inheritProjectContext,
 						maxTurns: p.cfg.maxTurns,
-						systemPrompt: p.cfg.systemPrompt,
+						systemPrompt: withAppendPrompt(p.cfg.systemPrompt, appendPrompt),
 						systemPromptMode: p.cfg.systemPromptMode,
-						cwd: ctx.cwd,
+						cwd: p.task.cwd ?? ctx.cwd,
 						timeoutMs: p.cfg.timeoutMs,
 					},
 				})),

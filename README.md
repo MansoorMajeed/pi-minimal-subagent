@@ -50,6 +50,7 @@ model-selection guidance.
 | `task` | Required complete child instructions. |
 | `label` | Optional concise display goal; never replaces or modifies `task`. |
 | `model` | Optional per-task model override. |
+| `cwd` | Optional absolute working directory (an existing directory) for this child, e.g. a project checkout or worktree. Defaults to the parent's cwd. |
 
 ## Background execution and controls
 
@@ -82,7 +83,12 @@ instructions.
 | Pi mode | Omitted `async` | `async: true` | `async: false` |
 |---|---|---|---|
 | TUI | Background receipt | Background receipt | Blocking result |
-| Print / JSON / RPC | Blocking result | Rejected before launch | Blocking result |
+| RPC | Blocking result | Background receipt | Blocking result |
+| Print / JSON | Blocking result | Rejected before launch | Blocking result |
+
+In RPC mode, background completion arrives as an unsolicited follow-up turn once
+the session is idle — RPC clients must tolerate turn events outside their own
+prompts. Jobs are cancelled if the process shuts down before they finish.
 
 Only active background jobs appear in status without an ID. Exact-ID status also
 retains terminal results for the current session runtime. Human controls are also available directly while the parent is busy:
@@ -90,7 +96,13 @@ retains terminal results for the current session runtime. Human controls are als
 ```text
 /subagents
 /subagent-cancel <exact-job-id>
+/subagent-cancel all
 ```
+
+`/subagent-cancel all` cancels every active background job in this session runtime.
+Outside the TUI (for example an RPC client), `/subagents` reports the active jobs as
+one plain-text notification (ID, state, each child's goal, progress and timing)
+instead of opening the picker.
 
 `/subagents` opens a bounded, scrollable TUI picker: active background jobs first,
 then retained terminal jobs, newest-submitted first. Choose a job by its goals and
@@ -105,8 +117,7 @@ cancelling work. Details include activity, available task instructions, inline
 results, and artifact paths. Reopen to refresh a snapshot. Original task instructions
 are not retained in terminal job snapshots. These controls cover only this session
 runtime: reload/replacement clears the list, and opening the picker never adds
-model messages or changes your prompt. The picker requires TUI mode; exact-ID
-tool controls remain available in other modes.
+model messages or changes your prompt.
 
 Cancellation does not roll back file edits. Tasks in one call must be independent,
 and concurrent parent/child or child/child writes must own non-overlapping files
@@ -304,6 +315,14 @@ extensions: /absolute/path/a.ts, /absolute/path/b.ts
 Disabling extensions also removes extension-provided safety guards. Do not do it
 for a mutating worker unless its tool allowlist and execution environment are
 safe without those guards.
+
+### Host rules for every child
+
+An app that embeds Pi can set `PI_MINIMAL_SUBAGENT_APPEND_PROMPT` in the parent's
+environment to the absolute path of a text file. Its contents are appended to every
+child's system prompt, after the agent's own prompt (in `append` and `replace` modes
+alike), so host rules apply whichever agent the parent picks. The file is read at each
+launch; a relative path or an unreadable file fails the launch.
 
 ## Safety and limits
 

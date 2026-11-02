@@ -26,7 +26,9 @@ fs.cpSync(sourceDir, path.join(harnessDir, "src"), { recursive: true });
 fs.cpSync(path.resolve(new URL("../agents", import.meta.url).pathname), path.join(harnessDir, "agents"), { recursive: true });
 fs.copyFileSync(new URL("../SUBAGENT_MODELS.md", import.meta.url), path.join(harnessDir, "SUBAGENT_MODELS.md"));
 const piRoot = findPackageRoot(path.dirname(fs.realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim())));
-const dependencyRoot = path.join(piRoot, "node_modules");
+// Sibling deps are hoisted two levels up from the package in both npm installs
+// (…/node_modules/@earendil-works/pi-coding-agent) and managed releases.
+const dependencyRoot = path.join(piRoot, "..", "..");
 fs.mkdirSync(path.join(harnessDir, "node_modules", "@earendil-works"), { recursive: true });
 fs.symlinkSync(piRoot, path.join(harnessDir, "node_modules", "@earendil-works", "pi-coding-agent"), "dir");
 fs.symlinkSync(path.join(dependencyRoot, "@earendil-works", "pi-tui"), path.join(harnessDir, "node_modules", "@earendil-works", "pi-tui"), "dir");
@@ -318,11 +320,45 @@ test("TUI defaults to background while non-TUI defaults to blocking and rejects 
 		assert.match(blocking.content[0].text, /worker — ok/i);
 		const printDefault = await tool.execute("print-call", { tasks: [{ agent: "worker", task: "print" }] }, undefined, undefined, ctx("print"));
 		assert.match(printDefault.content[0].text, /worker — ok/i);
-		await assert.rejects(
-			() => tool.execute("bad-call", { tasks: [{ agent: "worker", task: "bad" }], async: true }, undefined, undefined, ctx("rpc")),
-			/TUI|synchronous/i,
-		);
+		const rpcDefault = await tool.execute("rpc-default-call", { tasks: [{ agent: "worker", task: "rpc-default" }] }, undefined, undefined, ctx("rpc"));
+		assert.match(rpcDefault.content[0].text, /worker — ok/i);
+		const rpcBackground = await tool.execute("rpc-async-call", { tasks: [{ agent: "worker", task: "rpc-background" }], async: true }, undefined, undefined, ctx("rpc"));
+		assert.match(rpcBackground.content[0].text, /continues in the background/i);
+		assert.equal(rpcBackground.details.backgroundReceipt, true);
+		for (const mode of ["print", "json"]) {
+			await assert.rejects(
+				() => tool.execute(`bad-call-${mode}`, { tasks: [{ agent: "worker", task: "bad" }], async: true }, undefined, undefined, ctx(mode)),
+				/print|JSON|blocking/i,
+			);
+		}
 		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx("tui"));
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("RPC background jobs deliver completion as a follow-up turn once the session is idle", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-rpc-delivery-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"done"}]}; setTimeout(() => process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n"), 80);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	try {
+		const { tool, handlers, messages } = registeredRuntime();
+		const ctx = { cwd: harnessDir, mode: "rpc", hasUI: true, modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "session-rpc" }, ui: {}, isIdle: () => true };
+		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const receipt = await tool.execute("rpc-bg", { tasks: [{ agent: "worker", task: "deliver me" }], async: true }, undefined, undefined, ctx);
+		assert.equal(receipt.details.backgroundReceipt, true);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		assert.equal(messages.length, 1);
+		await handlers.get("agent_settled")?.[0]?.({}, ctx);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(messages.length, 1);
+		assert.equal(messages[0].message.customType, "minimal-subagent-complete");
+		assert.match(messages[0].message.content, /Background subagent job .* completed/i);
+		assert.equal(messages[0].options.deliverAs, "followUp");
+		assert.equal(messages[0].options.triggerTurn, true);
+		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -359,7 +395,7 @@ test("background status and cancellation require exact IDs and the direct comman
 		assert.match(compact[1], /worker.*first goal/);
 		assert.ok(compact.every((line: string) => visibleWidth(line) <= 80));
 		const expanded = tool.renderResult(snapshot, { expanded: true, isPartial: false }, fakeTheme()).render(120).join("\n");
-		assert.match(expanded, /Artifacts: \/tmp\/pi-minsub/);
+		assert.match(expanded, new RegExp(`Artifacts: ${path.join(os.tmpdir(), "pi-minsub").replace(/\\/g, "\\\\")}`));
 		assert.match(expanded, /worker — queued — first goal — queued — Queued/);
 		assert.match(expanded, /first detailed instructions/);
 		assert.equal(tool.renderResult(one, { expanded: false, isPartial: false }, fakeTheme()).render(80).length, 3);
@@ -457,7 +493,7 @@ test("tool and slash cancellation report when natural completion already won", {
 	}
 });
 
-test("subagents command rejects non-TUI use and reports an empty current runtime", async () => {
+test("subagents command reports an empty current runtime in every mode", async () => {
 	const { commands, handlers, messages } = registeredRuntime();
 	const command = commands.get("subagents");
 	assert.ok(command, "human job picker is registered");
@@ -466,12 +502,86 @@ test("subagents command rejects non-TUI use and reports an empty current runtime
 	await handlers.get("session_start")?.[0]?.({}, ctx);
 	for (const mode of ["print", "json", "rpc"]) {
 		await command.handler("", { ...ctx, mode });
-		assert.match(notifications.at(-1)!, /TUI/);
+		assert.match(notifications.at(-1)!, /no active background subagent jobs/i);
 	}
 	await command.handler("", ctx);
 	assert.match(notifications.at(-1)!, /no.*background.*jobs/i);
 	assert.equal(messages.length, 0);
 	await handlers.get("session_shutdown")?.[0]?.({}, ctx);
+});
+
+test("outside the TUI, subagents lists active jobs as text and subagent-cancel all stops every one", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-rpc-controls-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `setTimeout(() => {}, 5_000);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const notifications: string[] = [];
+	const ctx = {
+		cwd: harnessDir,
+		mode: "rpc",
+		hasUI: true,
+		isIdle: () => true,
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "session-rpc-controls" },
+		ui: { notify: (text: string) => notifications.push(text) },
+	};
+	try {
+		const { tool, handlers, commands, messages } = registeredRuntime();
+		await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		const one = await tool.execute("one", { tasks: [{ agent: "worker", label: "First goal", task: "first" }], async: true }, undefined, undefined, ctx);
+		const two = await tool.execute("two", { tasks: [{ agent: "scout", label: "Second goal", task: "second" }], async: true }, undefined, undefined, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		await commands.get("subagents").handler("", ctx);
+		const listing = notifications.at(-1)!;
+		assert.match(listing, new RegExp(`Job ${one.details.jobId} — running`));
+		assert.match(listing, new RegExp(`Job ${two.details.jobId} — running`));
+		assert.match(listing, /worker — \w+ — First goal/);
+		assert.match(listing, /scout — \w+ — Second goal/);
+
+		await commands.get("subagent-cancel").handler(" all ", ctx);
+		assert.match(notifications.at(-1)!, /Cancelled 2 subagent jobs.*file edits are not undone/i);
+		for (const id of [one.details.jobId, two.details.jobId]) {
+			const status = await tool.execute(`status-${id}`, { action: "status", id }, undefined, undefined, ctx);
+			assert.equal(status.details.state, "terminal");
+		}
+		await commands.get("subagent-cancel").handler("all", ctx);
+		assert.match(notifications.at(-1)!, /no active background subagent jobs/i);
+		await commands.get("subagents").handler("", ctx);
+		assert.match(notifications.at(-1)!, /no active background subagent jobs/i);
+		await handlers.get("agent_settled")?.[0]?.({}, ctx);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(messages.length, 0, "cancelled jobs send no completion follow-up");
+		await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a task cwd sets the child's working directory and must be an existing absolute directory", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-task-cwd-"));
+	const project = path.join(dir, "project");
+	fs.mkdirSync(project);
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"cwd=" + process.cwd()}]}; process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = { cwd: harnessDir, mode: "print", modelRegistry: { getAvailable: () => [] } };
+	try {
+		const tool = registeredTool();
+		const inProject = await tool.execute("in-project", { tasks: [{ agent: "worker", task: "where", cwd: project }] }, undefined, undefined, ctx);
+		assert.match(inProject.content[0].text, new RegExp(`cwd=${fs.realpathSync(project)}`));
+		const inherited = await tool.execute("inherited", { tasks: [{ agent: "worker", task: "where" }] }, undefined, undefined, ctx);
+		assert.match(inherited.content[0].text, new RegExp(`cwd=${fs.realpathSync(harnessDir)}`));
+		await assert.rejects(() => tool.execute("relative", { tasks: [{ agent: "worker", task: "x", cwd: "project" }] }, undefined, undefined, ctx), /cwd.*absolute/i);
+		await assert.rejects(() => tool.execute("missing", { tasks: [{ agent: "worker", task: "x", cwd: path.join(dir, "missing") }] }, undefined, undefined, ctx), /cwd.*directory/i);
+		const file = path.join(dir, "file.txt");
+		fs.writeFileSync(file, "");
+		await assert.rejects(() => tool.execute("file", { tasks: [{ agent: "worker", task: "x", cwd: file }] }, undefined, undefined, ctx), /cwd.*directory/i);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("subagents picker closes on shutdown and stale callbacks cannot touch a replacement context", { concurrency: false }, async () => {
@@ -1098,6 +1208,43 @@ test("tool wiring preserves labeled task metadata, refreshes the clock, and clea
 		globalThis.setInterval = realSetInterval;
 		globalThis.clearInterval = realClearInterval;
 		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("an append-prompt file named by the environment is added to every child's system prompt", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-append-prompt-"));
+	const rules = path.join(dir, "rules.md");
+	fs.writeFileSync(rules, "HOST RULE: never write to /memory.\n");
+	const oldPath = process.env.PATH;
+	const oldPrompt = process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT;
+	const binDir = fakePi(dir, `const fs = require("node:fs");
+		const args = process.argv.slice(2);
+		const flag = args.findIndex((arg) => arg === "--append-system-prompt" || arg === "--system-prompt");
+		const prompt = flag >= 0 ? args[flag] + "\\n" + fs.readFileSync(args[flag + 1], "utf8") : "no prompt flag";
+		const message = {role:"assistant",content:[{type:"text",text:prompt}]};
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = { cwd: harnessDir, mode: "print", modelRegistry: { getAvailable: () => [] } };
+	try {
+		const tool = registeredTool();
+		delete process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT;
+		const plain = await tool.execute("plain", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx);
+		assert.match(plain.content[0].text, /--append-system-prompt\nYou are an implementation subagent/);
+		assert.doesNotMatch(plain.content[0].text, /HOST RULE/);
+
+		process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT = rules;
+		const withRules = await tool.execute("rules", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx);
+		assert.match(withRules.content[0].text, /--append-system-prompt\nYou are an implementation subagent[\s\S]*\n\nHOST RULE: never write to \/memory\./);
+
+		process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT = "rules.md";
+		await assert.rejects(() => tool.execute("relative", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx), /PI_MINIMAL_SUBAGENT_APPEND_PROMPT.*absolute/);
+		process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT = path.join(dir, "missing.md");
+		await assert.rejects(() => tool.execute("missing", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx), /PI_MINIMAL_SUBAGENT_APPEND_PROMPT.*missing\.md/);
+	} finally {
+		process.env.PATH = oldPath;
+		if (oldPrompt === undefined) delete process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT;
+		else process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT = oldPrompt;
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
