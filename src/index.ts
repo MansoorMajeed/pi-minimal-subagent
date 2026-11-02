@@ -39,6 +39,7 @@ const ToolParams = Type.Object({
 				task: Type.String({ description: "Concrete instruction for this subagent" }),
 				label: Type.Optional(Type.String({ description: "Concise display goal (e.g. 'Implement refresh-token rotation')" })),
 				model: Type.Optional(Type.String({ description: "Override model (e.g. 'anthropic/claude-sonnet-4')" })),
+				cwd: Type.Optional(Type.String({ description: "Absolute working directory for this child (e.g. a project checkout or worktree). Defaults to the parent's cwd." })),
 			}),
 			{ description: "One entry per subagent. Multiple entries run concurrently.", minItems: 1, maxItems: MAX_TASKS },
 		),
@@ -369,6 +370,15 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 					content: [{ type: "text" as const, text: `Unknown agent(s): ${[...new Set(unknown)].join(", ")}.\nAvailable: ${available}` }],
 				};
 			}
+			for (const [index, t] of tasks.entries()) {
+				if (t.cwd === undefined) continue;
+				if (!path.isAbsolute(t.cwd)) throw new Error(`Task ${index + 1} cwd must be an absolute path: ${t.cwd}`);
+				let isDirectory = false;
+				try {
+					isDirectory = fs.statSync(t.cwd).isDirectory();
+				} catch {}
+				if (!isDirectory) throw new Error(`Task ${index + 1} cwd is not an existing directory: ${t.cwd}`);
+			}
 			const background = params.async ?? ctx.mode === "tui";
 			if (params.async === true && ctx.mode !== "tui" && ctx.mode !== "rpc") {
 				throw new Error("Background subagents require an interactive or RPC runtime; print and JSON modes exit after one prompt, so use blocking execution (async:false or omit async).");
@@ -427,7 +437,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						maxTurns: p.cfg.maxTurns,
 						systemPrompt: p.cfg.systemPrompt,
 						systemPromptMode: p.cfg.systemPromptMode,
-						cwd: ctx.cwd,
+						cwd: p.task.cwd ?? ctx.cwd,
 						timeoutMs: p.cfg.timeoutMs,
 					},
 				})),

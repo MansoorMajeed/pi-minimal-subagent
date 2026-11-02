@@ -559,6 +559,31 @@ test("outside the TUI, subagents lists active jobs as text and subagent-cancel a
 	}
 });
 
+test("a task cwd sets the child's working directory and must be an existing absolute directory", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-task-cwd-"));
+	const project = path.join(dir, "project");
+	fs.mkdirSync(project);
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const message={role:"assistant",content:[{type:"text",text:"cwd=" + process.cwd()}]}; process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = { cwd: harnessDir, mode: "print", modelRegistry: { getAvailable: () => [] } };
+	try {
+		const tool = registeredTool();
+		const inProject = await tool.execute("in-project", { tasks: [{ agent: "worker", task: "where", cwd: project }] }, undefined, undefined, ctx);
+		assert.match(inProject.content[0].text, new RegExp(`cwd=${fs.realpathSync(project)}`));
+		const inherited = await tool.execute("inherited", { tasks: [{ agent: "worker", task: "where" }] }, undefined, undefined, ctx);
+		assert.match(inherited.content[0].text, new RegExp(`cwd=${fs.realpathSync(harnessDir)}`));
+		await assert.rejects(() => tool.execute("relative", { tasks: [{ agent: "worker", task: "x", cwd: "project" }] }, undefined, undefined, ctx), /cwd.*absolute/i);
+		await assert.rejects(() => tool.execute("missing", { tasks: [{ agent: "worker", task: "x", cwd: path.join(dir, "missing") }] }, undefined, undefined, ctx), /cwd.*directory/i);
+		const file = path.join(dir, "file.txt");
+		fs.writeFileSync(file, "");
+		await assert.rejects(() => tool.execute("file", { tasks: [{ agent: "worker", task: "x", cwd: file }] }, undefined, undefined, ctx), /cwd.*directory/i);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("subagents picker closes on shutdown and stale callbacks cannot touch a replacement context", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-picker-shutdown-"));
 	const oldPath = process.env.PATH;

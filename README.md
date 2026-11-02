@@ -50,6 +50,7 @@ model-selection guidance.
 | `task` | Required complete child instructions. |
 | `label` | Optional concise display goal; never replaces or modifies `task`. |
 | `model` | Optional per-task model override. |
+| `cwd` | Optional absolute working directory (an existing directory) for this child, e.g. a project checkout or worktree. Defaults to the parent's cwd. |
 
 ## Background execution and controls
 
