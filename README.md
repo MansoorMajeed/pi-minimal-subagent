@@ -316,6 +316,14 @@ Disabling extensions also removes extension-provided safety guards. Do not do it
 for a mutating worker unless its tool allowlist and execution environment are
 safe without those guards.
 
+### Host rules for every child
+
+An app that embeds Pi can set `PI_MINIMAL_SUBAGENT_APPEND_PROMPT` in the parent's
+environment to the absolute path of a text file. Its contents are appended to every
+child's system prompt, after the agent's own prompt (in `append` and `replace` modes
+alike), so host rules apply whichever agent the parent picks. The file is read at each
+launch; a relative path or an unreadable file fails the launch.
+
 ## Safety and limits
 
 - Child processes receive `PI_MINIMAL_SUBAGENT_CHILD=1`; this package does not

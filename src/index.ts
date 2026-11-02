@@ -13,6 +13,7 @@ import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity }
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { BackgroundUI } from "./background-ui.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
+import { loadChildAppendPrompt, withAppendPrompt } from "./child-prompt.ts";
 import { JobRegistry, type JobHandle } from "./jobs.ts";
 import { showJobPicker } from "./job-ui.ts";
 import { loadModelGuide, searchModels } from "./model-guidance.ts";
@@ -379,6 +380,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 				} catch {}
 				if (!isDirectory) throw new Error(`Task ${index + 1} cwd is not an existing directory: ${t.cwd}`);
 			}
+			const appendPrompt = loadChildAppendPrompt();
 			const background = params.async ?? ctx.mode === "tui";
 			if (params.async === true && ctx.mode !== "tui" && ctx.mode !== "rpc") {
 				throw new Error("Background subagents require an interactive or RPC runtime; print and JSON modes exit after one prompt, so use blocking execution (async:false or omit async).");
@@ -435,7 +437,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						extensions: p.cfg.extensions,
 						inheritProjectContext: p.cfg.inheritProjectContext,
 						maxTurns: p.cfg.maxTurns,
-						systemPrompt: p.cfg.systemPrompt,
+						systemPrompt: withAppendPrompt(p.cfg.systemPrompt, appendPrompt),
 						systemPromptMode: p.cfg.systemPromptMode,
 						cwd: p.task.cwd ?? ctx.cwd,
 						timeoutMs: p.cfg.timeoutMs,

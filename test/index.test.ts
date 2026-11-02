@@ -1211,3 +1211,40 @@ test("tool wiring preserves labeled task metadata, refreshes the clock, and clea
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("an append-prompt file named by the environment is added to every child's system prompt", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-append-prompt-"));
+	const rules = path.join(dir, "rules.md");
+	fs.writeFileSync(rules, "HOST RULE: never write to /memory.\n");
+	const oldPath = process.env.PATH;
+	const oldPrompt = process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT;
+	const binDir = fakePi(dir, `const fs = require("node:fs");
+		const args = process.argv.slice(2);
+		const flag = args.findIndex((arg) => arg === "--append-system-prompt" || arg === "--system-prompt");
+		const prompt = flag >= 0 ? args[flag] + "\\n" + fs.readFileSync(args[flag + 1], "utf8") : "no prompt flag";
+		const message = {role:"assistant",content:[{type:"text",text:prompt}]};
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = { cwd: harnessDir, mode: "print", modelRegistry: { getAvailable: () => [] } };
+	try {
+		const tool = registeredTool();
+		delete process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT;
+		const plain = await tool.execute("plain", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx);
+		assert.match(plain.content[0].text, /--append-system-prompt\nYou are an implementation subagent/);
+		assert.doesNotMatch(plain.content[0].text, /HOST RULE/);
+
+		process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT = rules;
+		const withRules = await tool.execute("rules", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx);
+		assert.match(withRules.content[0].text, /--append-system-prompt\nYou are an implementation subagent[\s\S]*\n\nHOST RULE: never write to \/memory\./);
+
+		process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT = "rules.md";
+		await assert.rejects(() => tool.execute("relative", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx), /PI_MINIMAL_SUBAGENT_APPEND_PROMPT.*absolute/);
+		process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT = path.join(dir, "missing.md");
+		await assert.rejects(() => tool.execute("missing", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx), /PI_MINIMAL_SUBAGENT_APPEND_PROMPT.*missing\.md/);
+	} finally {
+		process.env.PATH = oldPath;
+		if (oldPrompt === undefined) delete process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT;
+		else process.env.PI_MINIMAL_SUBAGENT_APPEND_PROMPT = oldPrompt;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
