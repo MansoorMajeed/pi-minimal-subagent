@@ -329,8 +329,15 @@ launch; a relative path or an unreadable file fails the launch.
 An embedding app can also set `PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS` to one or more
 absolute extension paths, separated by `:`. Every child loads them with `--extension`,
 in addition to whatever the agent's `extensions` field selects (normal discovery, an
-allowlist, or none), so host tools are available whichever agent the parent picks. The
-variable is read at each launch; a relative entry fails the launch.
+allowlist, or none). The variable is read at each launch; a relative entry fails the
+launch.
+
+Loading an extension does not make its tools active for an agent that sets `tools`:
+pi's `--tools` replaces the whole active set, extension tools included. Set
+`PI_MINIMAL_SUBAGENT_CHILD_TOOLS` to the tool names, separated by `,`, to add them to
+every such agent's allowlist. Agents without `tools` already get them through pi's
+default selection. Together the two variables make host tools available whichever agent
+the parent picks.
 
 ## Safety and limits
 
