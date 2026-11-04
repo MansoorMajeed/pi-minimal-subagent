@@ -42,6 +42,8 @@ export interface SubagentRunOptions {
 	tools?: string[];
 	/** Omitted loads normal extensions; empty disables them; values are explicit paths. */
 	extensions?: string[];
+	/** Loaded in addition to whatever `extensions` selects, e.g. host tools. */
+	hostExtensions?: string[];
 	/** False disables AGENTS.md and CLAUDE.md discovery in the child. */
 	inheritProjectContext?: boolean;
 	/** Hard completed-assistant-turn limit. */
@@ -329,6 +331,7 @@ export async function runSubagent(opts: SubagentRunOptions): Promise<SubagentRes
 				args.push("--no-extensions");
 				for (const extension of opts.extensions) args.push("--extension", extension);
 			}
+			for (const extension of opts.hostExtensions ?? []) args.push("--extension", extension);
 			if (opts.inheritProjectContext === false) args.push("--no-context-files");
 
 			if (opts.systemPrompt?.trim()) {
