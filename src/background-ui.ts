@@ -1,10 +1,13 @@
 import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./activity.ts";
 import type { JobSnapshot } from "./jobs.ts";
-import { SubagentStatusComponent } from "./status-render.ts";
+import { renderStatusRow, SubagentStatusComponent } from "./status-render.ts";
 import { buildStatusRows } from "./status-layout.ts";
 
 const WIDGET_ID = "minimal-subagent-background";
+const RPC_MAX_CARDS = 4;
+const RPC_MAX_LINE_CHARS = 160;
+const PLAIN_THEME = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 
 interface WidgetUI {
 	setWidget(id: string, content: undefined | ((tui: any, theme: any) => Component), options?: { placement?: "aboveEditor" | "belowEditor" }): void;
@@ -90,6 +93,145 @@ export class BackgroundUI {
 		if (this.mounted) {
 			this.mounted = false;
 			this.ui.setWidget(WIDGET_ID, undefined);
+		}
+	}
+}
+
+function clipLine(line: string): string {
+	const characters = [...line];
+	return characters.length <= RPC_MAX_LINE_CHARS ? line : `${characters.slice(0, RPC_MAX_LINE_CHARS - 1).join("")}…`;
+}
+
+/**
+ * Plain-text status for clients without the TUI: overall counts, then the same
+ * status rows as the TUI widget for up to four running children (or queued ones
+ * when none run), each job ID once above its cards. Empty when nothing is active.
+ */
+function isActive(job: JobSnapshot): boolean {
+	return job.background && job.state !== "terminal" && job.activities.length > 0;
+}
+
+export function rpcStatusLines(jobs: JobSnapshot[], now = Date.now()): string[] {
+	const all = jobs
+		.filter(isActive)
+		.flatMap((job) => job.activities.map((activity) => ({ job, activity })));
+	if (all.length === 0) return [];
+	const running = all.filter(({ activity }) => activity.state === "running");
+	const queued = all.filter(({ activity }) => activity.state === "queued");
+	const pool = running.length > 0 ? running : queued;
+	const lines = [`Background · ${running.length} run · ${queued.length} queued`];
+	let previousJobId: string | undefined;
+	for (const { job, activity } of pool.slice(0, RPC_MAX_CARDS)) {
+		if (job.id !== previousJobId) {
+			lines.push(`Job ${sanitizeTerminalText(job.id).replace(/\s+/g, " ")}`);
+			previousJobId = job.id;
+		}
+		for (const row of buildStatusRows([activity], now)) {
+			const line = renderStatusRow(row, PLAIN_THEME);
+			if (line.trim()) lines.push(line);
+		}
+	}
+	const hidden = pool.length - RPC_MAX_CARDS;
+	if (hidden > 0) lines.push(`+${hidden} more ${running.length > 0 ? "running" : "queued"}`);
+	return lines.map(clipLine);
+}
+
+interface LinesUI {
+	setWidget(id: string, content: string[] | undefined): void;
+}
+
+export interface RpcStatusOptions {
+	/** Minimum time between published updates. */
+	intervalMs?: number;
+	/** Republish while work is active, so elapsed time advances during silence. */
+	refreshMs?: number;
+}
+
+/**
+ * Publishes background status as string-array widget updates, which pi's RPC
+ * mode forwards to its client as `setWidget` requests. Job changes arrive per
+ * child event, so `changed()` only schedules: at most one update per interval,
+ * rendered from a fresh snapshot. The widget is cleared as soon as nothing is active.
+ */
+export class RpcStatusWidget {
+	private ui: LinesUI;
+	private getJobs: () => JobSnapshot[];
+	private intervalMs: number;
+	private refreshMs: number;
+	private lastPublished = 0;
+	private pending?: ReturnType<typeof setTimeout>;
+	private refresh?: ReturnType<typeof setInterval>;
+	private mounted = false;
+	private disposed = false;
+
+	constructor(ui: LinesUI, getJobs: () => JobSnapshot[], options: RpcStatusOptions = {}) {
+		this.ui = ui;
+		this.getJobs = getJobs;
+		this.intervalMs = options.intervalMs ?? 1_000;
+		this.refreshMs = options.refreshMs ?? 5_000;
+	}
+
+	changed(): void {
+		if (this.disposed) return;
+		if (this.mounted && !this.getJobs().some(isActive)) {
+			// Clear at once, so the status ends before any completion turn starts.
+			if (this.pending) clearTimeout(this.pending);
+			this.pending = undefined;
+			this.publish();
+			return;
+		}
+		if (this.pending) return;
+		const wait = this.lastPublished + this.intervalMs - Date.now();
+		if (wait <= 0) {
+			this.publish();
+			return;
+		}
+		this.pending = setTimeout(() => {
+			this.pending = undefined;
+			this.publish();
+		}, wait);
+		this.pending.unref?.();
+	}
+
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		if (this.pending) clearTimeout(this.pending);
+		this.pending = undefined;
+		this.unmount();
+	}
+
+	private publish(): void {
+		if (this.disposed) return;
+		this.lastPublished = Date.now();
+		const lines = rpcStatusLines(this.getJobs());
+		if (lines.length === 0) {
+			this.unmount();
+			return;
+		}
+		this.mounted = true;
+		this.send(lines);
+		if (!this.refresh) {
+			this.refresh = setInterval(() => this.changed(), this.refreshMs);
+			this.refresh.unref?.();
+		}
+	}
+
+	private unmount(): void {
+		if (this.refresh) clearInterval(this.refresh);
+		this.refresh = undefined;
+		if (this.mounted) {
+			this.mounted = false;
+			this.send(undefined);
+		}
+	}
+
+	/** Runs inside the job registry's listeners; a failing UI must not break job settlement. */
+	private send(lines: string[] | undefined): void {
+		try {
+			this.ui.setWidget(WIDGET_ID, lines);
+		} catch {
+			// Status is best effort; the next update tries again.
 		}
 	}
 }

@@ -38,7 +38,7 @@ const activityModule = await import(pathToFileURL(path.join(harnessDir, "src", "
 const layoutModule = await import(pathToFileURL(path.join(harnessDir, "src", "status-layout.ts")).href);
 const tuiModule = await import(pathToFileURL(path.join(dependencyRoot, "@earendil-works", "pi-tui", "dist", "index.js")).href);
 const minimalSubagentExtension = indexModule.default;
-const { BackgroundUI, SubagentStatusComponent } = indexModule;
+const { BackgroundUI, RpcStatusWidget, rpcStatusLines, SubagentStatusComponent } = indexModule;
 const { createActivity } = activityModule;
 const { buildStatusRows } = layoutModule;
 const { visibleWidth } = tuiModule;
@@ -1074,6 +1074,142 @@ test("queued widget cards appear only when no child is running and narrow render
 	assert.equal(lines.length, 14);
 	assert.ok(lines.every((line: string) => visibleWidth(line) <= 9));
 	manager.dispose();
+});
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("RPC status lines are plain, sanitized, padding-free, and bounded", () => {
+	const lines = rpcStatusLines([widgetJob("job-one", ["running", "done"]), widgetJob("job-two", ["queued"])]);
+	assert.equal(lines[0], "Background · 1 run · 1 queued");
+	assert.equal(lines[1], "Job job-one");
+	assert.match(lines[2], /^● worker-0 running model: test\/model thinking: default/);
+	assert.ok(lines.includes("  Goal: goal 0"));
+	assert.ok(lines.some((line: string) => /^ {2}Elapsed 2s · timeout in \d+s · 0 turns$/.test(line)));
+	assert.ok(lines.includes("  Reported: no update yet"));
+	assert.ok(lines.includes("  ↳ running"));
+	assert.equal(lines.some((line: string) => line.trim() === ""), false);
+	assert.equal(lines.some((line: string) => line.includes("job-two") || line.includes("\x1b")), false);
+	assert.equal(lines.length, 7);
+
+	const queuedOnly = rpcStatusLines([widgetJob("waiting", ["queued", "queued"])]);
+	assert.equal(queuedOnly[0], "Background · 0 run · 2 queued");
+	assert.equal(queuedOnly.filter((line: string) => line.startsWith("○ worker-")).length, 2);
+
+	const crowded = rpcStatusLines([widgetJob("big", ["running", "running", "running", "running", "running", "running"])]);
+	assert.equal(crowded.filter((line: string) => line.startsWith("● ")).length, 4);
+	assert.equal(crowded.at(-1), "+2 more running");
+
+	const long = widgetJob("long", ["running"]);
+	long.activities[0].reported = "x".repeat(400);
+	assert.ok(rpcStatusLines([long]).every((line: string) => [...line].length <= 160));
+});
+
+test("RPC status widget publishes immediately, coalesces bursts, refreshes timing, and clears when idle", { concurrency: false }, async () => {
+	const widgets: any[][] = [];
+	let jobs = [widgetJob("job-one", ["running"])];
+	const widget = new RpcStatusWidget({ setWidget: (...args: any[]) => widgets.push(args) }, () => jobs, { intervalMs: 40, refreshMs: 150 });
+	try {
+		widget.changed();
+		assert.equal(widgets.length, 1);
+		assert.equal(widgets[0][0], "minimal-subagent-background");
+		assert.ok(Array.isArray(widgets[0][1]));
+		assert.equal(widgets[0][1][0], "Background · 1 run · 0 queued");
+
+		for (let i = 0; i < 20; i++) widget.changed();
+		assert.equal(widgets.length, 1);
+		await sleep(70);
+		assert.equal(widgets.length, 2);
+
+		await sleep(200);
+		assert.ok(widgets.length >= 3, "timing refresh during silence");
+		assert.ok(widgets.every((args) => Array.isArray(args[1])));
+
+		jobs = [];
+		widget.changed();
+		assert.equal(widgets.at(-1)![1], undefined);
+		const cleared = widgets.length;
+		await sleep(200);
+		assert.equal(widgets.length, cleared, "no refresh after clearing");
+
+		widget.changed();
+		assert.equal(widgets.length, cleared, "clearing twice sends nothing");
+		jobs = [widgetJob("late", ["running"])];
+		widget.changed();
+		await sleep(70);
+		assert.equal(widgets.length, cleared + 1, "new work reopens the widget within one interval");
+		assert.equal(widgets.at(-1)![1][1], "Job late");
+	} finally {
+		widget.dispose();
+	}
+	const disposed = widgets.length;
+	assert.equal(widgets.at(-1)![1], undefined);
+	widget.changed();
+	await sleep(60);
+	assert.equal(widgets.length, disposed);
+});
+
+test("a throwing RPC UI never escapes the status widget", () => {
+	let calls = 0;
+	let jobs = [widgetJob("job-one", ["running"])];
+	const widget = new RpcStatusWidget({ setWidget: () => { calls++; throw new Error("closed"); } }, () => jobs, { intervalMs: 0, refreshMs: 60_000 });
+	assert.doesNotThrow(() => widget.changed());
+	jobs = [];
+	assert.doesNotThrow(() => widget.changed());
+	assert.doesNotThrow(() => widget.dispose());
+	assert.equal(calls, 2);
+});
+
+test("RPC sessions publish background progress as widget lines and clear them on completion", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-rpc-widget-"));
+	const oldPath = process.env.PATH;
+	const binDir = fakePi(dir, `const emit=(x)=>process.stdout.write(JSON.stringify(x)+"\\n"); setTimeout(()=>emit({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"Progress: halfway; finishing"}]}}),40); setTimeout(()=>emit({type:"agent_end",messages:[{role:"assistant",content:[{type:"text",text:"done"}]}]}),1300);`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const widgets: any[][] = [];
+	const ctx: any = {
+		cwd: harnessDir,
+		mode: "rpc",
+		hasUI: true,
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: { getSessionId: () => "rpc-widget-session" },
+		ui: { setWidget: (...args: any[]) => widgets.push(args), notify() {} },
+	};
+	try {
+		const runtime = registeredRuntime();
+		let clearedBeforeCompletion: boolean | undefined;
+		const push = runtime.messages.push.bind(runtime.messages);
+		runtime.messages.push = (...items: any[]) => {
+			clearedBeforeCompletion = widgets.length > 0 && widgets.at(-1)![1] === undefined;
+			return push(...items);
+		};
+		await runtime.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		ctx.isIdle = () => true;
+		const receipt = await runtime.tool.execute("rpc-widget", { async: true, tasks: [{ agent: "worker", task: "rpc work", label: "RPC goal" }] }, undefined, undefined, ctx);
+		assert.match(receipt.content[0].text, /background/i);
+		for (let i = 0; i < 150 && !widgets.some((args) => args[1]?.includes("  Reported: halfway; finishing")); i++) await sleep(10);
+		const progress = widgets.find((args) => args[1]?.includes("  Reported: halfway; finishing"));
+		assert.ok(progress, `no progress frame in ${JSON.stringify(widgets)}`);
+		assert.ok(progress[1].includes("  Goal: RPC goal"));
+		assert.ok(progress[1].every((line: unknown) => typeof line === "string"));
+		for (let i = 0; i < 300 && runtime.messages.length === 0; i++) await sleep(10);
+		assert.equal(runtime.messages.length, 1);
+		assert.equal(clearedBeforeCompletion, true, "widget cleared before the completion message");
+		assert.equal(widgets.at(-1)![1], undefined);
+		await runtime.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+	} finally {
+		process.env.PATH = oldPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("print and UI-less sessions never publish a status widget", { concurrency: false }, async () => {
+	for (const ctxMode of [{ mode: "print", hasUI: false }, { mode: "rpc", hasUI: false }, { mode: "json", hasUI: false }]) {
+		const widgets: any[] = [];
+		const runtime = registeredRuntime();
+		const ctx = { cwd: harnessDir, ...ctxMode, modelRegistry: { getAvailable: () => [] }, sessionManager: { getSessionId: () => "quiet" }, ui: { setWidget: (...args: any[]) => widgets.push(args) } };
+		await runtime.handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
+		await runtime.handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
+		assert.equal(widgets.length, 0, ctxMode.mode);
+	}
 });
 
 test("persisted parents allocate private, distinct child session paths; ephemeral parents do not", { concurrency: false }, async () => {
