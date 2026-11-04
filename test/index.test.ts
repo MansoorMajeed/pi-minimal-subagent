@@ -1078,30 +1078,43 @@ test("queued widget cards appear only when no child is running and narrow render
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("RPC status lines are plain, sanitized, padding-free, and bounded", () => {
-	const lines = rpcStatusLines([widgetJob("job-one", ["running", "done"]), widgetJob("job-two", ["queued"])]);
-	assert.equal(lines[0], "Background · 1 run · 1 queued");
-	assert.equal(lines[1], "Job job-one");
-	assert.match(lines[2], /^● worker-0 running model: test\/model thinking: default/);
-	assert.ok(lines.includes("  Goal: goal 0"));
-	assert.ok(lines.some((line: string) => /^ {2}Elapsed 2s · timeout in \d+s · 0 turns$/.test(line)));
-	assert.ok(lines.includes("  Reported: no update yet"));
-	assert.ok(lines.includes("  ↳ running"));
-	assert.equal(lines.some((line: string) => line.trim() === ""), false);
-	assert.equal(lines.some((line: string) => line.includes("job-two") || line.includes("\x1b")), false);
-	assert.equal(lines.length, 7);
+test("RPC status lines are compact, sanitized, and bounded", () => {
+	const first = widgetJob("job-one", ["running", "done"]);
+	first.activities[0].reported = "mapped the auth flow; next checking refresh tokens";
+	first.activities[0].recent = ["thinking", "bash go test ./auth", "bash finished", "thinking"];
+	const lines = rpcStatusLines([first, widgetJob("job-two", ["queued"])]);
+	assert.deepEqual(lines, [
+		"Background · 1 running · 1 queued",
+		"● goal 0 · 2s",
+		"  mapped the auth flow; next checking refresh tokens",
+		"  ↳ bash go test ./auth",
+	]);
+
+	// No report or real step yet: the goal line alone.
+	const fresh = widgetJob("fresh", ["running"]);
+	fresh.activities[0].recent = ["queued", "started", "thinking"];
+	assert.deepEqual(rpcStatusLines([fresh]), ["Background · 1 running", "● goal 0 · 2s"]);
+
+	// Failed or finished markers are not steps; the command before them is.
+	const failed = widgetJob("failed", ["running"]);
+	failed.activities[0].recent = ["read src/a.ts", "read failed", "writing response"];
+	assert.equal(rpcStatusLines([failed]).at(-1), "  ↳ read src/a.ts");
 
 	const queuedOnly = rpcStatusLines([widgetJob("waiting", ["queued", "queued"])]);
-	assert.equal(queuedOnly[0], "Background · 0 run · 2 queued");
-	assert.equal(queuedOnly.filter((line: string) => line.startsWith("○ worker-")).length, 2);
+	assert.deepEqual(queuedOnly, ["Background · 2 queued", "○ goal 0 · queued", "○ goal 1 · queued"]);
 
 	const crowded = rpcStatusLines([widgetJob("big", ["running", "running", "running", "running", "running", "running"])]);
 	assert.equal(crowded.filter((line: string) => line.startsWith("● ")).length, 4);
 	assert.equal(crowded.at(-1), "+2 more running");
 
-	const long = widgetJob("long", ["running"]);
-	long.activities[0].reported = "x".repeat(400);
-	assert.ok(rpcStatusLines([long]).every((line: string) => [...line].length <= 160));
+	const noisy = widgetJob("noisy", ["running"]);
+	noisy.activities[0].goal = "goal\x1b[2J\nwith newline";
+	noisy.activities[0].reported = "x".repeat(400);
+	noisy.activities[0].recent = ["bash \x1b]0;title\x07echo hi"];
+	const noisyLines = rpcStatusLines([noisy]);
+	assert.equal(noisyLines[1], "● goal with newline · 2s");
+	assert.equal(noisyLines[3], "  ↳ bash echo hi");
+	assert.ok(noisyLines.every((line: string) => [...line].length <= 160 && !/[\u0000-\u001f]/.test(line)));
 });
 
 test("RPC status widget publishes immediately, coalesces bursts, refreshes timing, and clears when idle", { concurrency: false }, async () => {
@@ -1113,7 +1126,7 @@ test("RPC status widget publishes immediately, coalesces bursts, refreshes timin
 		assert.equal(widgets.length, 1);
 		assert.equal(widgets[0][0], "minimal-subagent-background");
 		assert.ok(Array.isArray(widgets[0][1]));
-		assert.equal(widgets[0][1][0], "Background · 1 run · 0 queued");
+		assert.equal(widgets[0][1][0], "Background · 1 running");
 
 		for (let i = 0; i < 20; i++) widget.changed();
 		assert.equal(widgets.length, 1);
@@ -1137,7 +1150,7 @@ test("RPC status widget publishes immediately, coalesces bursts, refreshes timin
 		widget.changed();
 		await sleep(70);
 		assert.equal(widgets.length, cleared + 1, "new work reopens the widget within one interval");
-		assert.equal(widgets.at(-1)![1][1], "Job late");
+		assert.deepEqual(widgets.at(-1)![1], ["Background · 1 running", "● goal 0 · 2s", "  ↳ running"]);
 	} finally {
 		widget.dispose();
 	}
@@ -1185,10 +1198,10 @@ test("RPC sessions publish background progress as widget lines and clear them on
 		ctx.isIdle = () => true;
 		const receipt = await runtime.tool.execute("rpc-widget", { async: true, tasks: [{ agent: "worker", task: "rpc work", label: "RPC goal" }] }, undefined, undefined, ctx);
 		assert.match(receipt.content[0].text, /background/i);
-		for (let i = 0; i < 150 && !widgets.some((args) => args[1]?.includes("  Reported: halfway; finishing")); i++) await sleep(10);
-		const progress = widgets.find((args) => args[1]?.includes("  Reported: halfway; finishing"));
+		for (let i = 0; i < 150 && !widgets.some((args) => args[1]?.includes("  halfway; finishing")); i++) await sleep(10);
+		const progress = widgets.find((args) => args[1]?.includes("  halfway; finishing"));
 		assert.ok(progress, `no progress frame in ${JSON.stringify(widgets)}`);
-		assert.ok(progress[1].includes("  Goal: RPC goal"));
+		assert.match(progress[1][1], /^● RPC goal · \d+s$/);
 		assert.ok(progress[1].every((line: unknown) => typeof line === "string"));
 		for (let i = 0; i < 300 && runtime.messages.length === 0; i++) await sleep(10);
 		assert.equal(runtime.messages.length, 1);

@@ -29,7 +29,7 @@ function formatUsage(usage: UsageSummary): string {
 	return parts.length ? `[${parts.join(" · ")}]` : "";
 }
 
-function formatDuration(milliseconds: number): string {
+export function formatDuration(milliseconds: number): string {
 	let seconds = Math.max(0, Math.floor(milliseconds / 1000));
 	const hours = Math.floor(seconds / 3600);
 	seconds %= 3600;

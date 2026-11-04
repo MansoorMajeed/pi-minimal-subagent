@@ -1,13 +1,12 @@
 import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { sanitizeTerminalText } from "./activity.ts";
+import { sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import type { JobSnapshot } from "./jobs.ts";
-import { renderStatusRow, SubagentStatusComponent } from "./status-render.ts";
-import { buildStatusRows } from "./status-layout.ts";
+import { SubagentStatusComponent } from "./status-render.ts";
+import { buildStatusRows, formatDuration, singleLineStatusText } from "./status-layout.ts";
 
 const WIDGET_ID = "minimal-subagent-background";
 const RPC_MAX_CARDS = 4;
 const RPC_MAX_LINE_CHARS = 160;
-const PLAIN_THEME = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 
 interface WidgetUI {
 	setWidget(id: string, content: undefined | ((tui: any, theme: any) => Component), options?: { placement?: "aboveEditor" | "belowEditor" }): void;
@@ -102,35 +101,51 @@ function clipLine(line: string): string {
 	return characters.length <= RPC_MAX_LINE_CHARS ? line : `${characters.slice(0, RPC_MAX_LINE_CHARS - 1).join("")}…`;
 }
 
-/**
- * Plain-text status for clients without the TUI: overall counts, then the same
- * status rows as the TUI widget for up to four running children (or queued ones
- * when none run), each job ID once above its cards. Empty when nothing is active.
- */
 function isActive(job: JobSnapshot): boolean {
 	return job.background && job.state !== "terminal" && job.activities.length > 0;
 }
 
+// Activity entries that report state rather than what the child acted on.
+const STATUS_ENTRY = /^(?:queued|started|thinking|writing response|done)$|^\S+ (?:finished|failed)$/;
+
+/** The latest tool step a child started, such as `bash go test ./...`. */
+function lastStep(recent: string[]): string | undefined {
+	for (let i = recent.length - 1; i >= 0; i--) {
+		const entry = singleLineStatusText(recent[i]);
+		if (entry && !STATUS_ENTRY.test(entry)) return entry;
+	}
+	return undefined;
+}
+
+function compactCard(activity: ChildActivity, now: number): string[] {
+	const goal = singleLineStatusText(activity.goal);
+	if (activity.state === "queued") return [`○ ${goal} · queued`];
+	const elapsed = activity.startedAt === undefined ? "" : ` · ${formatDuration(now - activity.startedAt)}`;
+	const lines = [`● ${goal}${elapsed}`];
+	const reported = activity.reported ? singleLineStatusText(activity.reported) : "";
+	if (reported) lines.push(`  ${reported}`);
+	const step = lastStep(activity.recent);
+	if (step) lines.push(`  ↳ ${step}`);
+	return lines;
+}
+
+/**
+ * Compact plain-text status for clients without the TUI, such as chat apps
+ * on a phone: overall counts, then up to four running children (or queued
+ * ones when none run), each as its goal and elapsed time, its latest reported
+ * progress, and its latest tool step. Empty when nothing is active.
+ */
 export function rpcStatusLines(jobs: JobSnapshot[], now = Date.now()): string[] {
 	const all = jobs
 		.filter(isActive)
-		.flatMap((job) => job.activities.map((activity) => ({ job, activity })));
+		.flatMap((job) => job.activities);
 	if (all.length === 0) return [];
-	const running = all.filter(({ activity }) => activity.state === "running");
-	const queued = all.filter(({ activity }) => activity.state === "queued");
+	const running = all.filter((activity) => activity.state === "running");
+	const queued = all.filter((activity) => activity.state === "queued");
 	const pool = running.length > 0 ? running : queued;
-	const lines = [`Background · ${running.length} run · ${queued.length} queued`];
-	let previousJobId: string | undefined;
-	for (const { job, activity } of pool.slice(0, RPC_MAX_CARDS)) {
-		if (job.id !== previousJobId) {
-			lines.push(`Job ${sanitizeTerminalText(job.id).replace(/\s+/g, " ")}`);
-			previousJobId = job.id;
-		}
-		for (const row of buildStatusRows([activity], now)) {
-			const line = renderStatusRow(row, PLAIN_THEME);
-			if (line.trim()) lines.push(line);
-		}
-	}
+	const counts = [running.length ? `${running.length} running` : "", queued.length ? `${queued.length} queued` : ""].filter(Boolean);
+	const lines = [`Background · ${counts.join(" · ") || "finishing"}`];
+	for (const activity of pool.slice(0, RPC_MAX_CARDS)) lines.push(...compactCard(activity, now));
 	const hidden = pool.length - RPC_MAX_CARDS;
 	if (hidden > 0) lines.push(`+${hidden} more ${running.length > 0 ? "running" : "queued"}`);
 	return lines.map(clipLine);

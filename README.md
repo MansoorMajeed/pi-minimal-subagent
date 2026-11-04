@@ -93,12 +93,25 @@ prompts. Jobs are cancelled if the process shuts down before they finish.
 While background jobs run, RPC sessions also publish their status as a plain-text
 widget: pi forwards each update to the client as a fire-and-forget
 `extension_ui_request` with `method: "setWidget"`, `widgetKey:
-"minimal-subagent-background"`, and `widgetLines`. The lines are the
-[progress display](#progress-display) rows without colour or padding: overall
-counts, each job ID once, then up to four running children (or queued ones when
-none run) and a `+N more` line. Updates are coalesced to at most one per second,
-repeat every five seconds so elapsed time advances, and lines are capped at 160
-characters. When no background work remains, one update without `widgetLines`
+"minimal-subagent-background"`, and `widgetLines`. The lines are compact for
+small screens such as chat apps:
+
+```text
+Background · 2 running
+● Map auth flow · 3m 12s
+  mapped middleware; checking refresh-token handling
+  ↳ bash git diff --stat
+● Review correctness · 41s
+  ↳ read src/auth.ts
+```
+
+Each child shows its goal and elapsed time, its latest reported milestone (when
+there is one), and its latest tool step, skipping state entries such as
+`thinking` or `bash finished`. Up to four running children appear (or queued
+ones, as `○ <goal> · queued`, when none run), then a `+N more` line. Job IDs,
+model, usage, and timeout stay in the TUI and exact-ID status. Updates are
+coalesced to at most one per second, repeat every five seconds so elapsed time
+advances, and lines are capped at 160 characters. When no background work remains, one update without `widgetLines`
 clears it, before the completion turn starts. Clients may display or ignore it.
 
 Only active background jobs appear in status without an ID. Exact-ID status also
