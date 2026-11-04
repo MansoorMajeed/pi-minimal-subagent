@@ -90,6 +90,17 @@ In RPC mode, background completion arrives as an unsolicited follow-up turn once
 the session is idle — RPC clients must tolerate turn events outside their own
 prompts. Jobs are cancelled if the process shuts down before they finish.
 
+While background jobs run, RPC sessions also publish their status as a plain-text
+widget: pi forwards each update to the client as a fire-and-forget
+`extension_ui_request` with `method: "setWidget"`, `widgetKey:
+"minimal-subagent-background"`, and `widgetLines`. The lines are the
+[progress display](#progress-display) rows without colour or padding: overall
+counts, each job ID once, then up to four running children (or queued ones when
+none run) and a `+N more` line. Updates are coalesced to at most one per second,
+repeat every five seconds so elapsed time advances, and lines are capped at 160
+characters. When no background work remains, one update without `widgetLines`
+clears it, before the completion turn starts. Clients may display or ignore it.
+
 Only active background jobs appear in status without an ID. Exact-ID status also
 retains terminal results for the current session runtime. Human controls are also available directly while the parent is busy:
 

@@ -9,7 +9,7 @@ function statusIcon(row: StatusHeaderRow, theme: any): string {
 	return theme.fg("error", "✗");
 }
 
-function renderStatusRow(row: StatusRow, theme: any): string {
+export function renderStatusRow(row: StatusRow, theme: any): string {
 	if (row.kind === "header") {
 		const state = row.state === "aborted" ? "cancelled" : row.state.replaceAll("_", " ");
 		const stateColor = row.state === "done" ? "success" : row.state === "running" ? "accent" : row.state === "queued" || row.state === "aborted" ? "dim" : "error";

@@ -11,7 +11,7 @@ import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity } from "./activity.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
-import { BackgroundUI } from "./background-ui.ts";
+import { BackgroundUI, RpcStatusWidget, rpcStatusLines } from "./background-ui.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
 import { loadChildAppendPrompt, loadChildExtensions, loadChildTools, withAppendPrompt, withHostTools } from "./child-prompt.ts";
 import { JobRegistry, type JobHandle } from "./jobs.ts";
@@ -22,7 +22,7 @@ import type { SubagentResult } from "./spawn.ts";
 import { expandedTaskText, SubagentStatusComponent } from "./status-render.ts";
 import { activityTimingText, buildStatusRows, completionOutcome, singleLineStatusText } from "./status-layout.ts";
 
-export { BackgroundUI, SubagentStatusComponent };
+export { BackgroundUI, RpcStatusWidget, rpcStatusLines, SubagentStatusComponent };
 
 const MAX_TASKS = 8;
 
@@ -106,6 +106,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 	let deliveryCheck: ReturnType<typeof setImmediate> | undefined;
 	let runtimeContext: any;
 	let backgroundUI: BackgroundUI | undefined;
+	let rpcStatus: RpcStatusWidget | undefined;
 	let unsubscribeBackground: (() => void) | undefined;
 
 	const flushPendingDeliveries = () => {
@@ -168,6 +169,11 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			backgroundUI = new BackgroundUI(ctx.ui);
 			const ownedJobs = jobs;
 			unsubscribeBackground = jobs.subscribe(() => backgroundUI?.update(ownedJobs.listActiveBackground()));
+		} else if (ctx.mode === "rpc" && ctx.hasUI && typeof ctx.ui?.setWidget === "function") {
+			const ownedJobs = jobs;
+			const status = new RpcStatusWidget(ctx.ui, () => ownedJobs.listActiveBackground());
+			rpcStatus = status;
+			unsubscribeBackground = jobs.subscribe(() => status.changed());
 		}
 	});
 	const confirmReplacement = async (_event: unknown, ctx: any) => {
@@ -195,6 +201,8 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 		unsubscribeBackground = undefined;
 		backgroundUI?.dispose();
 		backgroundUI = undefined;
+		rpcStatus?.dispose();
+		rpcStatus = undefined;
 		await jobs.dispose();
 	});
 	pi.registerCommand("subagents", {
