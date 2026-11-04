@@ -1248,3 +1248,33 @@ test("an append-prompt file named by the environment is added to every child's s
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("host extensions named by the environment are loaded by every child", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-child-extensions-"));
+	const oldPath = process.env.PATH;
+	const oldExtensions = process.env.PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS;
+	const binDir = fakePi(dir, `const args = process.argv.slice(2);
+		const loaded = args.flatMap((arg, i) => arg === "--extension" ? [args[i + 1]] : []);
+		const message = {role:"assistant",content:[{type:"text",text:"extensions=" + loaded.join(",")}]};
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = { cwd: harnessDir, mode: "print", modelRegistry: { getAvailable: () => [] } };
+	try {
+		const tool = registeredTool();
+		delete process.env.PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS;
+		const plain = await tool.execute("plain", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx);
+		assert.match(plain.content[0].text, /extensions=(\n|$)/);
+
+		process.env.PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS = "/opt/host/web.ts:/opt/host/other.ts";
+		const withHost = await tool.execute("host", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx);
+		assert.match(withHost.content[0].text, /extensions=\/opt\/host\/web\.ts,\/opt\/host\/other\.ts/);
+
+		process.env.PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS = "/opt/host/web.ts:relative.ts";
+		await assert.rejects(() => tool.execute("relative", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx), /PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS.*absolute.*relative\.ts/);
+	} finally {
+		process.env.PATH = oldPath;
+		if (oldExtensions === undefined) delete process.env.PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS;
+		else process.env.PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS = oldExtensions;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});

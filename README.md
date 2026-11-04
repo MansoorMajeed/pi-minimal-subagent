@@ -324,6 +324,14 @@ child's system prompt, after the agent's own prompt (in `append` and `replace` m
 alike), so host rules apply whichever agent the parent picks. The file is read at each
 launch; a relative path or an unreadable file fails the launch.
 
+### Host extensions for every child
+
+An embedding app can also set `PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS` to one or more
+absolute extension paths, separated by `:`. Every child loads them with `--extension`,
+in addition to whatever the agent's `extensions` field selects (normal discovery, an
+allowlist, or none), so host tools are available whichever agent the parent picks. The
+variable is read at each launch; a relative entry fails the launch.
+
 ## Safety and limits
 
 - Child processes receive `PI_MINIMAL_SUBAGENT_CHILD=1`; this package does not

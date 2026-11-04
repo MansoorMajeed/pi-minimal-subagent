@@ -210,7 +210,7 @@ test("runSubagent maps thinking settings to exact Pi flags", { concurrency: fals
 	}
 });
 
-test("runSubagent maps extension and project-context controls to exact Pi flags", { concurrency: false }, async () => {
+test("runSubagent maps extension, host extension, and project-context controls to exact Pi flags", { concurrency: false }, async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-test-"));
 	const oldPath = process.env.PATH;
 	const binDir = fakePi(
@@ -244,6 +244,19 @@ test("runSubagent maps extension and project-context controls to exact Pi flags"
 		const inheritedArgs = JSON.parse(inherited.answer);
 		assert.equal(inheritedArgs.includes("--no-extensions"), false);
 		assert.equal(inheritedArgs.includes("--no-context-files"), false);
+		assert.equal(inheritedArgs.includes("--extension"), false);
+
+		const hostWithDiscovery = await runSubagent({ ...baseOptions(dir), hostExtensions: ["/opt/host/web.ts"] });
+		const hostWithDiscoveryArgs = JSON.parse(hostWithDiscovery.answer);
+		assert.equal(hostWithDiscoveryArgs.includes("--no-extensions"), false);
+		assert.deepEqual(hostWithDiscoveryArgs.slice(hostWithDiscoveryArgs.indexOf("--extension"), hostWithDiscoveryArgs.indexOf("--extension") + 2), ["--extension", "/opt/host/web.ts"]);
+
+		const hostWithAllowlist = await runSubagent({ ...baseOptions(dir), extensions: ["/tmp/a.ts"], hostExtensions: ["/opt/host/web.ts"] });
+		const hostWithAllowlistArgs = JSON.parse(hostWithAllowlist.answer);
+		assert.deepEqual(
+			hostWithAllowlistArgs.slice(hostWithAllowlistArgs.indexOf("--no-extensions"), hostWithAllowlistArgs.indexOf("--no-extensions") + 5),
+			["--no-extensions", "--extension", "/tmp/a.ts", "--extension", "/opt/host/web.ts"],
+		);
 	} finally {
 		process.env.PATH = oldPath;
 		fs.rmSync(dir, { recursive: true, force: true });

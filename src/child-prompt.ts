@@ -15,6 +15,19 @@ export function loadChildAppendPrompt(env: Record<string, string | undefined> = 
 	}
 }
 
+/** Names absolute extension paths (":"-separated) that every child loads, e.g. tools from an embedding app. */
+export const CHILD_EXTENSIONS_ENV = "PI_MINIMAL_SUBAGENT_CHILD_EXTENSIONS";
+
+export function loadChildExtensions(env: Record<string, string | undefined> = process.env): string[] {
+	const value = env[CHILD_EXTENSIONS_ENV];
+	if (!value) return [];
+	const paths = value.split(":").filter((entry) => entry !== "");
+	for (const file of paths) {
+		if (!path.isAbsolute(file)) throw new Error(`${CHILD_EXTENSIONS_ENV} entries must be absolute paths: ${file}`);
+	}
+	return paths;
+}
+
 export function withAppendPrompt(systemPrompt: string | undefined, append: string | undefined): string | undefined {
 	if (!append) return systemPrompt;
 	return systemPrompt?.trim() ? `${systemPrompt.trimEnd()}\n\n${append}` : append;
