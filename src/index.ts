@@ -13,7 +13,7 @@ import { createActivity, displayGoal, sanitizeTerminalText, type ChildActivity }
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { BackgroundUI } from "./background-ui.ts";
 import { isMinimalSubagentChild } from "./child-boundary.ts";
-import { loadChildAppendPrompt, loadChildExtensions, withAppendPrompt } from "./child-prompt.ts";
+import { loadChildAppendPrompt, loadChildExtensions, loadChildTools, withAppendPrompt, withHostTools } from "./child-prompt.ts";
 import { JobRegistry, type JobHandle } from "./jobs.ts";
 import { showJobPicker } from "./job-ui.ts";
 import { loadModelGuide, searchModels } from "./model-guidance.ts";
@@ -382,6 +382,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 			}
 			const appendPrompt = loadChildAppendPrompt();
 			const hostExtensions = loadChildExtensions();
+			const hostTools = loadChildTools();
 			const background = params.async ?? ctx.mode === "tui";
 			if (params.async === true && ctx.mode !== "tui" && ctx.mode !== "rpc") {
 				throw new Error("Background subagents require an interactive or RPC runtime; print and JSON modes exit after one prompt, so use blocking execution (async:false or omit async).");
@@ -434,7 +435,7 @@ export default function minimalSubagentExtension(pi: ExtensionAPI) {
 						sessionPath: p.sessionPath,
 						model: p.model,
 						thinking: p.cfg.thinking,
-						tools: p.cfg.tools,
+						tools: withHostTools(p.cfg.tools, hostTools),
 						extensions: p.cfg.extensions,
 						hostExtensions,
 						inheritProjectContext: p.cfg.inheritProjectContext,

@@ -28,6 +28,27 @@ export function loadChildExtensions(env: Record<string, string | undefined> = pr
 	return paths;
 }
 
+/**
+ * Names tools (","-separated) added to the allowlist of every child whose agent sets
+ * `tools`. pi's --tools replaces the whole active set, extension tools included, so
+ * host extension tools are otherwise off for those agents.
+ */
+export const CHILD_TOOLS_ENV = "PI_MINIMAL_SUBAGENT_CHILD_TOOLS";
+
+export function loadChildTools(env: Record<string, string | undefined> = process.env): string[] {
+	const names = (env[CHILD_TOOLS_ENV] ?? "").split(",").map((entry) => entry.trim()).filter((entry) => entry !== "");
+	for (const name of names) {
+		if (/\s/.test(name)) throw new Error(`${CHILD_TOOLS_ENV} entries must be tool names separated by commas: ${name}`);
+	}
+	return names;
+}
+
+/** An agent without an allowlist keeps pi's default selection, which already includes extension tools. */
+export function withHostTools(tools: string[] | undefined, hostTools: string[]): string[] | undefined {
+	if (!tools?.length || hostTools.length === 0) return tools;
+	return [...new Set([...tools, ...hostTools])];
+}
+
 export function withAppendPrompt(systemPrompt: string | undefined, append: string | undefined): string | undefined {
 	if (!append) return systemPrompt;
 	return systemPrompt?.trim() ? `${systemPrompt.trimEnd()}\n\n${append}` : append;

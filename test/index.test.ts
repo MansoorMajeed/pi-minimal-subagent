@@ -1278,3 +1278,37 @@ test("host extensions named by the environment are loaded by every child", { con
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("host tools named by the environment join an agent's tool allowlist", { concurrency: false }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-minsub-child-tools-"));
+	const oldPath = process.env.PATH;
+	const oldTools = process.env.PI_MINIMAL_SUBAGENT_CHILD_TOOLS;
+	const binDir = fakePi(dir, `const args = process.argv.slice(2);
+		const at = args.indexOf("--tools");
+		const message = {role:"assistant",content:[{type:"text",text:"tools=" + (at < 0 ? "(default)" : args[at + 1])}]};
+		process.stdout.write(JSON.stringify({type:"agent_end",messages:[message]})+"\\n");`);
+	process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+	const ctx = { cwd: harnessDir, mode: "print", modelRegistry: { getAvailable: () => [] } };
+	try {
+		const tool = registeredTool();
+		delete process.env.PI_MINIMAL_SUBAGENT_CHILD_TOOLS;
+		const plain = await tool.execute("plain", { tasks: [{ agent: "scout", task: "x" }] }, undefined, undefined, ctx);
+		assert.match(plain.content[0].text, /tools=read,grep,find,ls,bash(\n|$)/);
+
+		process.env.PI_MINIMAL_SUBAGENT_CHILD_TOOLS = " web_search, web_fetch ,,bash";
+		const allowlisted = await tool.execute("allowlisted", { tasks: [{ agent: "scout", task: "x" }] }, undefined, undefined, ctx);
+		assert.match(allowlisted.content[0].text, /tools=read,grep,find,ls,bash,web_search,web_fetch(\n|$)/);
+
+		// Agents without an allowlist keep pi's default selection, which already includes extension tools.
+		const unrestricted = await tool.execute("unrestricted", { tasks: [{ agent: "worker", task: "x" }] }, undefined, undefined, ctx);
+		assert.match(unrestricted.content[0].text, /tools=\(default\)/);
+
+		process.env.PI_MINIMAL_SUBAGENT_CHILD_TOOLS = "web search";
+		await assert.rejects(() => tool.execute("bad", { tasks: [{ agent: "scout", task: "x" }] }, undefined, undefined, ctx), /PI_MINIMAL_SUBAGENT_CHILD_TOOLS.*web search/);
+	} finally {
+		process.env.PATH = oldPath;
+		if (oldTools === undefined) delete process.env.PI_MINIMAL_SUBAGENT_CHILD_TOOLS;
+		else process.env.PI_MINIMAL_SUBAGENT_CHILD_TOOLS = oldTools;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
